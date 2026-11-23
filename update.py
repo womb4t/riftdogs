@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Update Driftdogs to the latest release without touching the saved game.
+"""Update Riftdogs to the latest release without touching the saved game.
 
 Installs made from a Git checkout update that checkout to the newest signed release tag; others download
-the release archive and check it against MANIFEST.sha256, signed with the Driftdogs release key."""
+the release archive and check it against MANIFEST.sha256, signed with the Riftdogs release key."""
 import argparse
 import hashlib
 import json
@@ -17,25 +17,25 @@ import tempfile
 import urllib.error
 import urllib.request
 
-OFFICIAL = 'https://github.com/womb4t/driftdogs'
-REPOS = ('womb4t/driftdogs',)
-# GitHub names a release archive's top folder after the repository: driftdogs-X.
-ARCHIVE_PREFIXES = ('driftdogs-',)
+OFFICIAL = 'https://github.com/womb4t/riftdogs'
+REPOS = ('womb4t/riftdogs',)
+# GitHub names a release archive's top folder after the repository: riftdogs-X.
+ARCHIVE_PREFIXES = ('riftdogs-',)
 # A git checkout installs updates only from the public repository.
-OFFICIAL_REMOTES = {form.format(name) for name in ('driftdogs',)
+OFFICIAL_REMOTES = {form.format(name) for name in ('riftdogs',)
                     for form in ('https://github.com/womb4t/{}', 'git@github.com:womb4t/{}')}
 
-# The Driftdogs release key, in ssh allowed-signers format. Only releases signed with it install.
-NAMESPACE = 'driftdogs-release'
-PLACEHOLDER_SIGNERS = 'driftdogs-release ssh-ed25519 REPLACE_WITH_THE_RELEASE_KEY'
-RELEASE_SIGNERS = 'driftdogs-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFE/vQKgQKZwFQ2jOA6i/VZlae8XZTFmuzcCgGDf1UQG'   # the Driftdogs release key (public half)
+# The Riftdogs release key, in ssh allowed-signers format. Only releases signed with it install.
+NAMESPACE = 'riftdogs-release'
+PLACEHOLDER_SIGNERS = 'riftdogs-release ssh-ed25519 REPLACE_WITH_THE_RELEASE_KEY'
+RELEASE_SIGNERS = 'riftdogs-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFE/vQKgQKZwFQ2jOA6i/VZlae8XZTFmuzcCgGDf1UQG'   # the Riftdogs release key (public half)
 MANIFEST = 'MANIFEST.sha256'
-UNSIGNED = "This update isn't signed by Driftdogs. Nothing was installed."
+UNSIGNED = "This update isn't signed by Riftdogs. Nothing was installed."
 NO_KEY = 'This build has no release key yet. Nothing was installed.'
 NOT_NEWER = 'This update is not newer than your game. Nothing was installed.'
 MISMATCH = "This update's version doesn't match its signature. Nothing was installed."
 UNKNOWN_VERSION = "Can't read this game's version. Nothing was installed."
-HEADER = '# driftdogs-release '   # first manifest line: the signed release version
+HEADER = '# riftdogs-release '   # first manifest line: the signed release version
 SSH_SIGNATURE = b'-----BEGIN SSH SIGNATURE-----\n'
 DOWNLOAD_LIMIT = 64*1024*1024
 VERSION_LINE = re.compile(r"^VERSION = '([0-9]+(?:\.[0-9]+)*)'$", re.M)   # ASCII digits only (\d takes any script's)
@@ -119,8 +119,8 @@ def sha256(path):
 
 
 def tree_version(root):
-    """VERSION from a tree's driftdogs.py, read as text (never imported or run); None when absent."""
-    try: text = (Path(root)/'driftdogs.py').read_text(encoding='utf-8')
+    """VERSION from a tree's riftdogs.py, read as text (never imported or run); None when absent."""
+    try: text = (Path(root)/'riftdogs.py').read_text(encoding='utf-8')
     except (OSError,UnicodeDecodeError): return None
     found = VERSION_LINE.search(text)
     return found.group(1) if found else None
@@ -135,10 +135,10 @@ def running_version():
 
 
 def build_manifest(root):
-    """MANIFEST.sha256 for a release tree: a `# driftdogs-release <version>` line, then sorted `sha256  relative/path` lines."""
+    """MANIFEST.sha256 for a release tree: a `# riftdogs-release <version>` line, then sorted `sha256  relative/path` lines."""
     files = tree_files(root)
     version = tree_version(root)
-    if not version: raise ValueError(f'No VERSION line found in {Path(root)/"driftdogs.py"}')
+    if not version: raise ValueError(f'No VERSION line found in {Path(root)/"riftdogs.py"}')
     return (HEADER+version+'\n'+''.join(f'{sha256(files[rel])}  {rel}\n' for rel in sorted(files))).encode()
 
 
@@ -164,10 +164,10 @@ def parse_manifest(manifest):
 
 
 def ssh_verify(data, signature, namespace):
-    """ssh-keygen -Y verify against RELEASE_SIGNERS as principal driftdogs-release; raises unless it succeeds."""
+    """ssh-keygen -Y verify against RELEASE_SIGNERS as principal riftdogs-release; raises unless it succeeds."""
     require_release_key()
     if not shutil.which('ssh-keygen'): raise ValueError(NO_SSH_KEYGEN)
-    with tempfile.TemporaryDirectory(prefix='driftdogs-verify-') as folder:
+    with tempfile.TemporaryDirectory(prefix='riftdogs-verify-') as folder:
         sig = Path(folder)/'signature.sig'
         sig.write_bytes(signature)
         try:
@@ -221,7 +221,7 @@ def latest_tag(repo):
 
 
 def fetch(url):
-    req = urllib.request.Request(url,headers={'User-Agent':'Driftdogs-updater','Accept':'application/vnd.github+json'})
+    req = urllib.request.Request(url,headers={'User-Agent':'Riftdogs-updater','Accept':'application/vnd.github+json'})
     with urllib.request.urlopen(req,timeout=30) as response: data = response.read(DOWNLOAD_LIMIT+1)
     if len(data) > DOWNLOAD_LIMIT: raise ValueError(f'Download too large: {url}. Nothing was installed.')
     return data
@@ -241,7 +241,7 @@ def latest_release():
 
 
 def extract_release(archive, dest):
-    """Unpack a release archive into dest and return its one top folder (driftdogs-X)."""
+    """Unpack a release archive into dest and return its one top folder (riftdogs-X)."""
     with tarfile.open(archive) as tar:
         for member in tar.getmembers():
             name = Path(member.name)
@@ -250,13 +250,13 @@ def extract_release(archive, dest):
         tar.extractall(dest,filter='data')
     folders = list(Path(dest).iterdir())
     if len(folders) != 1 or not folders[0].is_dir() or not folders[0].name.startswith(ARCHIVE_PREFIXES):
-        raise ValueError('The release archive does not hold a Driftdogs release. Nothing was installed.')
+        raise ValueError('The release archive does not hold a Riftdogs release. Nothing was installed.')
     if os.path.lexists(folders[0]/'.git'): raise ValueError(UNSIGNED)   # check_tree skips .git, so a release may not carry one
     return folders[0]
 
 
 def check_release(source, files, version):
-    """The extracted tree matches the signed manifest, and its driftdogs.py VERSION is the signed version."""
+    """The extracted tree matches the signed manifest, and its riftdogs.py VERSION is the signed version."""
     check_tree(source,files)
     if tree_version(source) != version: raise ValueError(MISMATCH)
 
@@ -271,7 +271,7 @@ def release_update(dry_run):
     if dry_run:
         print(f'Dry run: would download {tag}, check its signature and rerun {installer_name()}.')
         return
-    work = Path(tempfile.mkdtemp(prefix='driftdogs-update-'))
+    work = Path(tempfile.mkdtemp(prefix='riftdogs-update-'))
     try:
         try:
             manifest = fetch(f'{base}/releases/download/{tag}/{MANIFEST}')
@@ -287,10 +287,10 @@ def release_update(dry_run):
         tree.mkdir()
         source = extract_release(archive,tree)
         check_release(source,files,version)
-        subprocess.run(['bash',str(source/installer_name())],check=True,cwd=source,env={**os.environ,'DRIFTDOGS_FROM_RELEASE':'1'})
+        subprocess.run(['bash',str(source/installer_name())],check=True,cwd=source,env={**os.environ,'RIFTDOGS_FROM_RELEASE':'1'})
     finally:
         shutil.rmtree(work,ignore_errors=True)
-    print('Update complete. Restart Driftdogs to use the new version.')
+    print('Update complete. Restart Riftdogs to use the new version.')
 
 
 def main():
@@ -305,7 +305,7 @@ def main():
             if args.unsigned: raise ValueError('--unsigned only works in a Git checkout. Nothing was installed.') from None
             return release_update(args.dry_run)
         if not official_remote(output(repo,'remote','get-url','origin')):
-            raise ValueError('This updater only fetches the official womb4t/driftdogs repository.')
+            raise ValueError('This updater only fetches the official womb4t/riftdogs repository.')
         if output(repo,'branch','--show-current') != 'main':
             raise ValueError('Switch to main before updating. Your current branch has been left unchanged.')
         if output(repo,'status','--porcelain'):
@@ -326,10 +326,10 @@ def main():
             subprocess.run(['git','-C',str(repo),'fetch','--tags','origin','main'],check=True,timeout=300)
             tag = latest_tag(repo)
             target = verify_tag(repo,tag)
-            print(f'Release {tag} is signed by Driftdogs.',flush=True)
+            print(f'Release {tag} is signed by Riftdogs.',flush=True)
         subprocess.run(['git','-C',str(repo),'merge','--ff-only',target],check=True,timeout=120)
         subprocess.run(['bash',str(repo/installer_name())],check=True,cwd=repo)
-        print('Update complete. Restart Driftdogs to use the new version.')
+        print('Update complete. Restart Riftdogs to use the new version.')
     except (OSError,ValueError,KeyError,StopIteration,tarfile.TarError,subprocess.CalledProcessError,subprocess.TimeoutExpired) as error:
         print(f'Update stopped: {error}',file=sys.stderr)
         print('You can reinstall at any time; saved progress is kept. See README.md for the install command.',file=sys.stderr)

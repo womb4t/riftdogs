@@ -86,7 +86,7 @@ def council_state(market, now):
     return state
 
 
-CUSTOMS_SEARCH = .55  # customs find contraband at a fully policed lawful world's dock (driftdogs.inspect_cargo)
+CUSTOMS_SEARCH = .55  # customs find contraband at a fully policed lawful world's dock (riftdogs.inspect_cargo)
 CUSTOMS_FINE = 25     # per tonne seized
 
 

@@ -1,3 +1,13 @@
+# 0.10.1 — trading pays
+
+- **New name: Riftdogs.** Driftdogs is now Riftdogs, at riftdogs.com. Install it fresh with the commands in the README; the online galaxy and your commander carry on.
+
+From your feedback: fuel and bad guesses were eating the profit.
+- **Fuel costs about a third as much:** 2 to 5 cr a unit, so a full tank is at most 35 cr (it was up to 98).
+- **New pilots start with 400 cr** (was 150), enough to fill most of the starter hold.
+- **Cargo screen (7).** Docked or in flight: what's aboard, what you paid, what it fetches here, the best known sale within a full tank with profit a tonne, and the three best stops for the whole load with the fuel to reach each.
+- **Know before you buy.** The market's BEST SALE column now shows profit a tonne, red when nobody in range pays more. Every purchase names the best known sale, or warns you when there isn't one.
+
 # 0.10.0 — Driftdogs opens the doors
 
 - **New name: Driftdogs, and a fresh start.** "Star Trader" was too close to other space trading games, so the game has a name of its own. The splash art, window title, menus, app launcher and Mac app all say Driftdogs. Everyone starts again: the online galaxy has been reset, and saves from earlier versions don't carry over. Online play is by invite: join the waiting list at driftdogsgame.com.

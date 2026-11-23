@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""DRIFTDOGS — an original Elite-inspired game. Python 3 + system SDL2/SDL2_ttf.
-Run: python3 driftdogs.py   Test: python3 driftdogs.py --self-test
+"""RIFTDOGS — an original Elite-inspired game. Python 3 + system SDL2/SDL2_ttf.
+Run: python3 riftdogs.py   Test: python3 riftdogs.py --self-test
 """
 import argparse
 import ctypes as C
@@ -28,8 +28,8 @@ import payments
 import seal
 import secrets
 
-VERSION = '0.10.0'
-GAME_NAME = 'Driftdogs'   # the player-facing name; file, save and config names keep 'driftdogs' for now
+VERSION = '0.10.1'
+GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
 # Career points needed for each commander rank: kills, trade profit and hyperspace jumps all count.
@@ -115,7 +115,7 @@ F11, TAB = 1073741892, 9
 # handlers still speak the older keys, so each screen's letters are translated to them here (only
 # for the keyboard: on-screen buttons send their actions directly). None retires an old key.
 # Numbered left to right along the top bar; 0 is home. Feedback is Ctrl+0 (and Menu, 4).
-SCREENS = {0: 'Home', 1: 'Nav', 2: 'VMS', 3: 'Money', 4: 'Menu', 5: 'Comms', 6: 'Logs', 7: 'Guide', 8: 'Engineering', 9: 'Help'}
+SCREENS = {0: 'Home', 1: 'Nav', 2: 'VMS', 3: 'Money', 4: 'Menu', 5: 'Comms', 6: 'Logs', 7: 'Cargo', 8: 'Engineering', 9: 'Help'}
 RETIRED = {ord('x'): None, ord('g'): None, ord('-'): None}   # screens that moved to the number row
 SCREEN_LETTERS = {
     'flight': {ord('d'): ord('c'), ord('r'): ord('7'), ord('f'): ord('4'), ord('l'): ord('b'), ord('j'): ord('z'),
@@ -135,7 +135,7 @@ ANY_CTRL = {ord('n'): ord('-'), ord('m'): ord('3')}   # quick note; full screen 
 TOP_BAR = ((155,90,'1 Nav',('open_navigation',)), (250,90,'2 VMS',('open_hub','vms')),
            (345,105,'3 Money',('open_hub','money')), (455,85,'4 Menu',('open_utility','menu')))
 # The rail down the right-hand side: the screens on the number row past 4 (x, label, key, the modes it lights).
-RAIL = ((5,'5 Comms',('dsc',)), (6,'6 Ledger',('trades',)), (8,'8 Engine',('engineering',)), (9,'9 Manual',('help',)), (0,'0 Home',()))
+RAIL = ((5,'5 Comms',('dsc',)), (6,'6 Ledger',('trades',)), (7,'7 Cargo',('cargo',)), (8,'8 Engine',('engineering',)), (9,'9 Manual',('help',)), (0,'0 Home',()))
 HOLD_SCREENS = ('hyperspace', 'dead', 'prison', 'intro', 'hail', 'distress', 'departure', 'trade_deal')
 GREEN, GOLD, RED = (68, 227, 182), (255, 206, 113), (255, 112, 100)
 WANTED_COLOR, SURPLUS_COLOR = (240, 150, 70), (110, 170, 240)  # station stock the economy wants or has too much of
@@ -152,7 +152,7 @@ PROFILES = [
     ('Anarchy', 1.2, 11500), ('Democracy', 6.4, 12800),
     ('Feudal', 0.8, 4200), ('Communist', 3.6, 8100)]
 
-SAVE = Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local/share') / 'driftdogs' / 'save.json'
+SAVE = Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local/share') / 'riftdogs' / 'save.json'
 # Bug reports and suggestions wait here, one file each, until an online session sends them.
 FEEDBACK_OUTBOX = SAVE.parent / 'feedback-outbox'
 
@@ -381,8 +381,9 @@ def new_market(state=None, seed=None):
 
 
 def fuel_price(system):
-    """Credits per fuel unit: refining and demand make fuel dear in some systems."""
-    return round(7 + random.Random(system * 31).uniform(0, 7))
+    """Credits per fuel unit, 2 to 5: refining and demand make fuel dearer in some systems.
+    Kept to about a fifth of a typical early trip's profit (0.10.1: it was 7-14 and ate three quarters)."""
+    return round(2 + random.Random(system * 31).uniform(0, 3))
 
 
 def random_asteroid(position):
@@ -405,6 +406,7 @@ def galactic_distance(a,b):
 
 
 FUEL_CAPACITY = 7.
+START_CREDITS = 400   # a new pilot's wallet: enough to fill most of the starter hold with mid-priced goods
 # Solar flares black out deep-space comms (remote price feeds, the commander relay) for minutes at a time.
 # The schedule comes from the clock, so every copy of the game sees the same flare at the same moment.
 FLARE_WINDOW = 45*60       # seconds; each window may hold one flare
@@ -533,7 +535,7 @@ EDITED_NOTICE = 'This save was edited outside the game.'
 
 class Pilot:
     def __init__(self):
-        self.credits = 150
+        self.credits = START_CREDITS
         self.crymto = 0
         self.redeemed_credit_codes = []
         self.notes = ""
@@ -928,7 +930,7 @@ class Pilot:
 
 def find_sdl_library(name):
     # The macOS app carries its own SDL frameworks; Homebrew installs outside the default dyld path.
-    bundled = Path(os.environ.get('DRIFTDOGS_FRAMEWORKS','/nonexistent'))/f'{name}.framework'/name
+    bundled = Path(os.environ.get('RIFTDOGS_FRAMEWORKS','/nonexistent'))/f'{name}.framework'/name
     if bundled.exists(): return str(bundled)
     found = ctypes.util.find_library(name)
     if found: return found
@@ -972,7 +974,7 @@ class Display:
         self.rendertext = bind(self.ttf, 'TTF_RenderUTF8_Blended', ptr, [ptr, C.c_char_p, Color])
         if self.init(32) != 0:
             raise RuntimeError('SDL could not open the display.')
-        bind(self.sdl, 'SDL_SetHint', C.c_int, [C.c_char_p, C.c_char_p])(b'SDL_VIDEO_X11_WMCLASS', b'driftdogs')
+        bind(self.sdl, 'SDL_SetHint', C.c_int, [C.c_char_p, C.c_char_p])(b'SDL_VIDEO_X11_WMCLASS', b'riftdogs')
         self.win = self.window(GAME_NAME.encode(), 0x2FFF0000, 0x2FFF0000, W, H, 0x2024)
         self.r = self.renderer(self.win, -1, 2) or self.renderer(self.win, -1, 0)
         bind(self.sdl, 'SDL_RenderSetLogicalSize', C.c_int, [ptr, i, i])(self.r, W, H)
@@ -1102,13 +1104,13 @@ class UpdateNotice:
             return len(parts) == 3 and parts > tuple(map(int,VERSION.split('.')))
         except (ValueError,AttributeError): return False
 
-    REPOS = ('womb4t/driftdogs',)
+    REPOS = ('womb4t/riftdogs',)
 
     @staticmethod
     def fetch_latest():
         for repo in UpdateNotice.REPOS:
             try:
-                req = urllib.request.Request(f'https://api.github.com/repos/{repo}/releases/latest',headers={'User-Agent':f'Driftdogs/{VERSION}','Accept':'application/vnd.github+json'})
+                req = urllib.request.Request(f'https://api.github.com/repos/{repo}/releases/latest',headers={'User-Agent':f'Riftdogs/{VERSION}','Accept':'application/vnd.github+json'})
                 with urllib.request.urlopen(req,timeout=2) as response:
                     return json.loads(response.read(65536)).get('tag_name')
             except urllib.error.HTTPError as error:
@@ -1118,7 +1120,7 @@ class UpdateNotice:
         return None
 
     def start(self):
-        if os.environ.get('DRIFTDOGS_NO_UPDATE_CHECK') == '1' or '--no-update-check' in sys.argv or '--self-test' in sys.argv or '--smoke-test' in sys.argv:
+        if os.environ.get('RIFTDOGS_NO_UPDATE_CHECK') == '1' or '--no-update-check' in sys.argv or '--self-test' in sys.argv or '--smoke-test' in sys.argv:
             return
         threading.Thread(target=self.check,daemon=True).start()
 
@@ -1358,7 +1360,7 @@ class Game:
             if mode == 'trades': mode = 'money'; continue
             if mode in ('flight','cruise','hyperspace','dead'): return mode
             if mode in ('hail','dsc'): return 'flight'
-            attr = {'money':'money_return','vms':'vms_return','help':'help_return','updates':'update_return','map':'map_return','menu':'menu_return','notes':'notes_return','rename':'rename_return','intro':'intro_return','feedback':'feedback_return','planet_profile':'map_return','engineering':'engineering_return'}.get(mode)
+            attr = {'money':'money_return','vms':'vms_return','help':'help_return','updates':'update_return','map':'map_return','menu':'menu_return','notes':'notes_return','rename':'rename_return','intro':'intro_return','feedback':'feedback_return','planet_profile':'map_return','engineering':'engineering_return','cargo':'cargo_return'}.get(mode)
             if not attr: return 'flight'
             mode = getattr(self,attr,'flight')
         return 'flight'
@@ -2361,7 +2363,7 @@ class Game:
         self.keys.clear()
         self.cloaked = False
         self.message = ('Docked.' + inspection) if inspection else 'Docked. 2 VMS for ship services; 3 Money; 1 Nav.'
-        if solar_flare() and not inspection: self.message = 'Docked. A solar flare is blocking comms; BEST IN RANGE has no signal.'
+        if solar_flare() and not inspection: self.message = 'Docked. A solar flare is blocking comms; BEST SALE has no signal.'
         if arrest: self.arrest()
         self.save()
         if self.mode == 'market': self.collect_inbox()
@@ -2995,7 +2997,7 @@ class Game:
 
     INTRO = [
         ('WELCOME, COMMANDER',[
-            'You are a freelance starship commander. You start docked at Halvora station with a small trading ship, 150 credits, a pulse laser and three missiles. Nobody knows your name yet.',
+            f'You are a freelance starship commander. You start docked at Halvora station with a small trading ship, {START_CREDITS} credits, a pulse laser and three missiles. Nobody knows your name yet.',
             'Eight star systems lie within reach, each with its own government, economy and technology. Lawful stations are patrolled and police their space; Anarchy and Feudal ports are frontier territory where anything goes.',
             'First, what should we call you? Type your commander name below.']),
         ('THE POINT OF THE GAME',[
@@ -3010,7 +3012,7 @@ class Game:
             'Near a station press R for docking clearance, then fly slowly into the slot, matching its roll. Within 5,000 m of a lawful station, pirates leave you alone.',
             'BACKSPACE goes back. ESC saves and closes the game at any time. Menu, Controls has the full pilot handbook.']),
         ('BUGS AND SUGGESTIONS',[
-            'Driftdogs is being built with its players. Found a bug or have an idea? Press 0 (or Menu, Report a bug), choose Bug report or Suggestion, describe it and click Log report.',
+            'Riftdogs is being built with its players. Found a bug or have an idea? Press 0 (or Menu, Report a bug), choose Bug report or Suggestion, describe it and click Log report.',
             'Each report is logged on your computer and reaches the developers the next time you play online.',
             'The game updates itself when a new version is released, so your idea might arrive in the next one. Good luck, Commander.'])]
 
@@ -3314,6 +3316,69 @@ class Game:
         if self.last_payment_code: d.text(560,543,'Your code: '+self.last_payment_code,GOLD)
         d.text(45,615,'TAB or a click switches box. ESC saves and closes.',dim)
 
+    def cargo_sales(self):
+        """For the cargo screen: what the hold is worth at here and at every world a full tank reaches.
+        Returns (rows, stops). rows: (good, tonnes, paid a tonne, local sale or None, best (price, world) or None).
+        stops: up to three (world, value of the whole load there, its profit over what you paid, fuel to get there),
+        best first. Prices are the latest known; a solar flare blanks the remote ones."""
+        p = self.p
+        here = None if p.deep_space else p.system
+        remote = [] if solar_flare() else self.systems_in_range(FUEL_CAPACITY)
+        rows = []
+        for good,tonnes in enumerate(p.cargo):
+            if tonnes <= 0: continue
+            paid = p.cargo_paid[good]//tonnes
+            local = quote(here,good,False) if here is not None else None
+            offers = [(quote(j,good,False),j) for j in remote]
+            rows.append((good,tonnes,paid,local,max(offers) if offers else None))
+        stops = []
+        if rows:
+            cost = sum(p.cargo_paid[g] for g,*_ in rows)
+            for j in ([here] if here is not None else [])+remote:
+                value = sum(quote(j,g,False)*t for g,t,*_ in rows)
+                fuel = 0. if j == here else self.jump_fuel_to(dict(position=coordinates(j),system=j))
+                stops.append((j,value,value-cost,fuel))
+            stops.sort(key=lambda s: (-s[1],s[3]))
+        return rows,stops[:3]
+
+    def draw_cargo(self):
+        d,p = self.d,self.p
+        dim = (135,175,185)
+        where = 'DEEP SPACE' if p.deep_space else ('DOCKED AT ' if self.session_mode() == 'market' else 'NEAR ')+SYSTEMS[p.system][0].upper()
+        d.text(35,85,f'CARGO HOLD / {sum(p.cargo)}/{p.capacity} t / {where}',GOLD)
+        rows,stops = self.cargo_sales()
+        if not rows:
+            d.text(35,140,'The hold is empty.')
+            d.text(35,175,'Buy cargo at a station market. The market\'s BEST SALE column shows where it sells best.',dim)
+            d.text(35,620,'7 or Return goes back.',dim)
+            return
+        for x,label in [(35,'COMMODITY'),(250,'T'),(300,'PAID/t'),(390,'HERE'),(470,'BEST SALE'),(720,'+/t'),(800,'PROFIT')]:
+            d.text(x,130,label)
+        flare = solar_flare()
+        for i,(good,tonnes,paid,local,best) in enumerate(rows):
+            y = 165+i*28
+            d.text(35,y,GOODS[good]+(' *' if good in ILLEGAL else ''))
+            d.text(250,y,str(tonnes)); d.text(300,y,str(paid))
+            d.text(390,y,'-' if local is None else str(local),(120,220,140) if local is not None and local > paid else GREEN)
+            if flare: d.text(470,y,static(random.randint(3,11)),(120,140,150)); continue
+            if best is None: d.text(470,y,'none in range',dim); continue
+            price,world = best
+            margin = price-paid
+            tint = (120,220,140) if margin > 0 else (200,120,110)
+            d.text(470,y,f'{price:>4} {SYSTEMS[world][0]}',tint)
+            d.text(720,y,f'{margin:+d}',tint); d.text(800,y,f'{margin*tonnes:+,} cr',tint)
+        y = 185+len(rows)*28
+        if flare:
+            d.text(35,y,f'SOLAR FLARE: no price signal from other worlds for about {math.ceil(flare/60)} min.',(220,110,80))
+        else:
+            d.text(35,y,'BEST STOPS FOR THE WHOLE LOAD',GOLD)
+            for i,(world,value,profit,fuel) in enumerate(stops):
+                line = (f'{i+1}. {SYSTEMS[world][0]:<10} {value:>6,} cr  ({profit:+,} cr)  '
+                        +('here' if world == (None if p.deep_space else p.system) else f'{fuel:.1f} fuel'+('' if fuel <= p.fuel else ' - refuel first')))
+                d.text(35,y+32+i*30,line,(120,220,140) if profit > 0 else (200,120,110))
+        d.text(35,590,f'Fuel {p.fuel:.2f}/7. Prices are the latest known; they move as others trade. * contraband pays Crymto.',dim)
+        d.text(35,620,'7 or Return goes back.',dim)
+
     def draw_trades(self):
         d,log = self.d,self.p.trade_log
         d.text(35,85,'MONEY / STATEMENT',GOLD)
@@ -3557,7 +3622,9 @@ class Game:
             if self.mode == 'trades': self.mouse_back(); return
             if self.mode != 'money': self.open_hub('money')
             if self.mode == 'money': self.trades_page,self.mode = 0,'trades'
-        elif n == 7: self.message = 'The galactic guide is coming in a later release.'
+        elif n == 7:
+            if self.mode == 'cargo': self.mode = self.cargo_return
+            else: self.cargo_return,self.mode = self.mode,'cargo'; self.keys.clear()
         elif n == 8:
             if self.mode == 'engineering': self.mode = self.engineering_return
             else: self.engineering_return,self.mode = self.mode,'engineering'; self.keys.clear()
@@ -4994,7 +5061,17 @@ class Game:
             if self.market_client:
                 self.market_client.queue_trade(self.p.system,good,stock[good]-before)
                 if good in ILLEGAL and not buy: self.report_contraband(delivered=(good,stock[good]-before))
+            if buy and not options.get('use_crymto'): result += self.resale_hint(good,value)
         return result
+
+    def resale_hint(self, good, paid):
+        """After a purchase: the best sale known within a full tank and the profit a tonne, or a plain warning."""
+        if solar_flare(): return ' (Solar flare: no price signal to check a resale.)'
+        best = self.best_sale_in_range(good)
+        if best is None or best[0] <= paid:
+            return f' WARNING: no buyer within a full tank is known to pay more than {paid} cr.'
+        price,system = best
+        return f' Best known sale: {price} cr at {SYSTEMS[system][0]} (+{price-paid}/t).'
 
     def update_market(self):
         """Advance bot trading and station economies, keep prices tied to station stock, and show traders at this station."""
@@ -5465,6 +5542,8 @@ class Game:
             for i,label in enumerate(('Today','7 days','All time')):
                 self.mouse_button(35+i*255,674,240,('> ' if i == self.report_period else '')+label,action=lambda i=i: setattr(self,'report_period',i))
             self.mouse_button(800,674,240,'Return to Money',action=self.mouse_back)
+        elif self.mode == 'cargo':
+            self.mouse_button(800,674,240,'Return',action=self.mouse_back)
         elif self.mode == 'trades':
             self.mouse_button(35,674,240,'Older',UP)
             self.mouse_button(290,674,240,'Newer',DOWN)
@@ -5608,7 +5687,7 @@ class Game:
             returns = {'map':'map_return','help':'help_return','updates':'update_return',
                        'menu':'menu_return','notes':'notes_return','rename':'rename_return','intro':'intro_return','feedback':'feedback_return',
                        'money':'money_return','vms':'vms_return','outfit':'outfit_return',
-                       'engineering':'engineering_return','launch_warning':'launch_return'}
+                       'engineering':'engineering_return','cargo':'cargo_return','launch_warning':'launch_return'}
             fixed = {'planet_profile':'map','redeem':'money','bank':'money','jobs':'money','trades':'money','reports':'money','hail':'flight','dsc':'flight',
                      'exchange':'money','trade_deal':'market','departure':'market'}
             if self.mode in returns: self.mode = getattr(self,returns[self.mode],'market')
@@ -5623,7 +5702,7 @@ class Game:
     def help_sections(self):
         return [
             ('Keys',[
-                ('Screens: the number row','0 1 2 3 4 5 6 8 9','0 Home (market or cockpit), 1 Nav, 2 VMS, 3 Money, 4 Menu, 5 Comms, 6 Logs, 8 Engineering, 9 Help. Press again to go back.'),
+                ('Screens: the number row','0 to 9','0 Home (market or cockpit), 1 Nav, 2 VMS, 3 Money, 4 Menu, 5 Comms, 6 Logs, 7 Cargo, 8 Engineering, 9 Help. Press again to go back.'),
                 ('Actions: letters','B buy, S sell, D dock...','Letters act on the screen you are on and are named for what they do. Every button shows its key.'),
                 ('Rarer controls','CTRL + letter (^)','Ctrl+0 bug report or suggestion, Ctrl+N quick note, Ctrl+M full screen; in flight Ctrl+P/S/R/U beacons, Ctrl+F fine steering, Ctrl+E distress, Ctrl+L long-range radar. Y (or Ctrl+G) approach guidance; X silences the alarm.'),
                 ('Back and close','BACKSPACE / ESC','Backspace goes back. Esc saves and closes from every screen.'),
@@ -5711,6 +5790,8 @@ class Game:
             self.draw_intro()
         elif self.mode == 'trades':
             self.draw_trades()
+        elif self.mode == 'cargo':
+            self.draw_cargo()
         elif self.mode == 'reports':
             self.draw_reports()
         elif self.mode == 'prison':
@@ -5769,10 +5850,10 @@ class Game:
                 'Saved games are preserved. To update by hand, in a terminal:',
                 '    python3 update.py', '',
                 'Or run the installed updater:',
-                '    python3 "${XDG_DATA_HOME:-$HOME/.local/share}/driftdogs/update.py"',
+                '    python3 "${XDG_DATA_HOME:-$HOME/.local/share}/riftdogs/update.py"',
                 '', 'The updater requires a clean main branch and stops on local edits.',
                 'It fetches the official repository, then reruns the installer.',
-                'Release notes: github.com/womb4t/driftdogs/releases',
+                'Release notes: github.com/womb4t/riftdogs/releases',
                 '', 'If an update fails, details are in update.log.',
                 'Use --no-update-check to disable network checks.', '', 'BACKSPACE returns. ESC saves and closes the game.']
             required = getattr(self,'update_required',None)
@@ -5781,7 +5862,7 @@ class Game:
         elif self.mode in ('market','outfit'):
             if self.mode == 'market':
                 d.text(35,85,'ORBITAL EXCHANGE / '+SYSTEMS[p.system][1].upper()+self.tax_label(p.system))
-                for x,label in [(35,'COMMODITY'),(270,'BUY'),(340,'SELL'),(415,'STOCK'),(495,'HOLD'),(565,'BEST IN RANGE')]:
+                for x,label in [(35,'COMMODITY'),(270,'BUY'),(340,'SELL'),(415,'STOCK'),(495,'HOLD'),(565,'BEST SALE   +/t')]:
                     d.text(x,130,label)
                 flare = solar_flare()
                 for i,g in enumerate(GOODS):
@@ -5798,13 +5879,14 @@ class Game:
                         d.text(565,170+i*30,static(random.randint(3,11)),(200,90,70) if random.random() < .3 else (120,140,150))
                     elif best:
                         price,system = best
-                        d.text(565,170+i*30,f'{price:>3} {SYSTEMS[system][0][:7]}',(120,220,140) if price > self.trade_quote(i,True) else (120,140,150))
+                        margin = price-self.trade_quote(i,True)
+                        d.text(565,170+i*30,f'{price:>3} {SYSTEMS[system][0][:7]:<7} {margin:+d}',(120,220,140) if margin > 0 else (200,120,110))
                     else: d.text(565,170+i*30,'-',(120,140,150))
                 d.text(35,470,'BUY = you pay. * Contraband sales pay Crymto (CYM).')
                 # Kept short so they stay clear of the Commander Status panel on the right.
                 if flare:
                     d.text(35,500,f'SOLAR FLARE: no signal. Comms back in about {math.ceil(flare/60)} min.',(220,110,80))
-                else: d.text(35,500,'BEST IN RANGE: best sale within a full tank (refuel in VMS).',(135,175,185))
+                else: d.text(35,500,'BEST SALE: best known price within a full tank; +/t is profit a tonne.',(135,175,185))
                 line = self.economy_line(p.system)
                 d.text(35,525,line,WANTED_COLOR if line.split(':')[0].isupper() else (135,175,185))
                 d.text(500,590,'STOCK:',(135,175,185)); d.text(575,590,'wanted',WANTED_COLOR); d.text(655,590,'surplus',SURPLUS_COLOR)
@@ -6044,7 +6126,7 @@ def grant_testing_credits(amount):
 def notify(text):
     if shutil.which('notify-send'): subprocess.run(['notify-send',GAME_NAME,text],check=False)
     elif sys.platform == 'darwin':
-        subprocess.run(['osascript','-e','on run argv','-e','display notification (item 1 of argv) with title "Driftdogs"','-e','end run',text],check=False)
+        subprocess.run(['osascript','-e','on run argv','-e','display notification (item 1 of argv) with title "Riftdogs"','-e','end run',text],check=False)
 
 
 def update_available():
@@ -6052,7 +6134,7 @@ def update_available():
     here = Path(__file__).resolve().parent
     # Only installed copies update themselves; source checkouts are left to Git.
     if not (here/'install-info.json').is_file() or not (here/'update.py').is_file(): return None
-    if os.environ.get('DRIFTDOGS_NO_UPDATE_CHECK') == '1' or '--no-update-check' in sys.argv: return None
+    if os.environ.get('RIFTDOGS_NO_UPDATE_CHECK') == '1' or '--no-update-check' in sys.argv: return None
     latest = UpdateNotice.fetch_latest()
     return latest if UpdateNotice.newer(latest) else None
 
@@ -6073,7 +6155,7 @@ def install_update(latest):
 
 def restart_updated():
     here = Path(__file__).resolve().parent
-    os.execv(sys.executable,[sys.executable,str(here/'driftdogs.py'),*sys.argv[1:],'--no-update-check'])
+    os.execv(sys.executable,[sys.executable,str(here/'riftdogs.py'),*sys.argv[1:],'--no-update-check'])
 
 
 def main():
@@ -6084,7 +6166,7 @@ def main():
     if '--self-test' in sys.argv:
         self_test()
         return
-    parser = argparse.ArgumentParser(description='Driftdogs — offline game with optional private progress server')
+    parser = argparse.ArgumentParser(description='Riftdogs — offline game with optional private progress server')
     parser.add_argument('--offline',action='store_true',help='Start offline directly without the mode chooser')
     parser.add_argument('--server')
     parser.add_argument('--token-file',type=Path)
@@ -6124,7 +6206,7 @@ def main():
             finally: screen.close()
         if testing and options.server: raise ValueError('Testing CLI tools require offline mode')
         if '--smoke-test' in sys.argv:
-            scratch = tempfile.TemporaryDirectory(prefix='driftdogs-smoke-')
+            scratch = tempfile.TemporaryDirectory(prefix='riftdogs-smoke-')
             SAVE = Path(scratch.name)/'save.json'
         if not testing and not options.offline:
             from startup import StartScreen,load_connection
@@ -6174,7 +6256,7 @@ def main():
             SAVE.parent.mkdir(parents=True,exist_ok=True)
             instance_file = SAVE.with_suffix('.lock').open('a')
             try: fcntl.flock(instance_file,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            except OSError: raise RuntimeError('Driftdogs is already running for this save. Close it before starting another copy.')
+            except OSError: raise RuntimeError('Riftdogs is already running for this save. Close it before starting another copy.')
         if '--grant-test-credits' in sys.argv:
             index = sys.argv.index('--grant-test-credits')
             if index+1 >= len(sys.argv): raise ValueError('Specify the testing credit amount.')

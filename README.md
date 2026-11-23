@@ -1,10 +1,10 @@
-# Driftdogs
+# Riftdogs
 
 A living galaxy you trade in.
 
 An original Elite-inspired Python space game for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.10.0**.
 
-Play offline, or play online in a shared living galaxy: other commanders' ships on your scanner, a shared market, the Relay's news ticker and payment codes. Online play uses the official Driftdogs server, which saves your progress. Offline play needs nothing. Shared combat is a future project. The phased development plan is in [ROADMAP.md](ROADMAP.md).
+Play offline, or play online in a shared living galaxy: other commanders' ships on your scanner, a shared market, the Relay's news ticker and payment codes. Online play uses the official Riftdogs server, which saves your progress. Offline play needs nothing. Shared combat is a future project. The phased development plan is in [ROADMAP.md](ROADMAP.md).
 
 The game's trade rules come from the **Sovereign Trade Assembly (STA)**, the galaxy's parliament; its Galactic Council runs the economy within them.
 
@@ -13,12 +13,12 @@ The game's trade rules come from the **Sovereign Trade Assembly (STA)**, the gal
 ## Install on Omarchy
 
 ```bash
-git clone https://github.com/womb4t/driftdogs.git
-cd driftdogs
+git clone https://github.com/womb4t/riftdogs.git
+cd riftdogs
 bash install.sh
 ```
 
-Open your application launcher and search for **Driftdogs**. The splash screen offers **Online play**, **Offline play**, and **Connection settings**.
+Open your application launcher and search for **Riftdogs**. The splash screen offers **Online play**, **Offline play**, and **Connection settings**.
 
 The installer uses `omarchy pkg add` only for missing dependencies: Python, SDL2 compatibility libraries, SDL2_ttf and a font. A dependency installation may ask for your password in the terminal. The game installs for your user without sudo. No pip packages are required.
 
@@ -29,14 +29,14 @@ The native window supports Hyprland tiling, resizing and 3 fullscreen. No compos
 Nothing else to install first: no Xcode tools, git, Homebrew or Python. In Terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/womb4t/driftdogs/main/install-mac.sh | bash
+curl -fsSL https://raw.githubusercontent.com/womb4t/riftdogs/main/install-mac.sh | bash
 ```
 
-The installer downloads the latest release, a private Python and the official SDL2/SDL2_ttf frameworks (all checksum-pinned except the release itself), and puts them inside `~/Applications/Driftdogs.app`, which opens from Launchpad or Spotlight with its own Dock icon. It works on Intel and Apple Silicon Macs and needs no password. Running it again repairs or updates the app; saves are kept.
+The installer downloads the latest release, a private Python and the official SDL2/SDL2_ttf frameworks (all checksum-pinned except the release itself), and puts them inside `~/Applications/Riftdogs.app`, which opens from Launchpad or Spotlight with its own Dock icon. It works on Intel and Apple Silicon Macs and needs no password. Running it again repairs or updates the app; saves are kept.
 
 ## Update
 
-**Updates are signed.** Since 0.10 the game only installs releases signed with the Driftdogs release key, and refuses anything else with "This update isn't signed by Driftdogs." Nothing is installed unless the check passes.
+**Updates are signed.** Since 0.10 the game only installs releases signed with the Riftdogs release key, and refuses anything else with "This update isn't signed by Riftdogs." Nothing is installed unless the check passes.
 
 
 **The game asks before updating, and waits for your answer.** When the installed game starts and a newer release is out, it shows `UPDATE vX.Y.Z IS READY. Install it before you play?` with two buttons, and nothing else on the start screen works until you choose. Update now (Enter or U, or click) installs it and restarts into the new version; Not now (N or Esc, or click) plays the current version and the game asks again next launch. `--offline` launches show the same question before the game opens. Linux and macOS behave the same. Saves are preserved. If an update cannot be installed, the start screen says so, the current version stays playable and the details are written to `update.log` beside your save.
@@ -48,7 +48,7 @@ git pull --ff-only
 bash install.sh
 ```
 
-**From 0.2.0 onward:** the game checks the official GitHub release once per day in a background thread. When a newer version is available, it shows an update notice. The menu (**`**) shows the installed version and instructions. Checks time out quietly offline; no account, telemetry or mandatory connection is required. Disable checks with `--no-update-check` or `DRIFTDOGS_NO_UPDATE_CHECK=1`.
+**From 0.2.0 onward:** the game checks the official GitHub release once per day in a background thread. When a newer version is available, it shows an update notice. The menu (**`**) shows the installed version and instructions. Checks time out quietly offline; no account, telemetry or mandatory connection is required. Disable checks with `--no-update-check` or `RIFTDOGS_NO_UPDATE_CHECK=1`.
 
 To apply an update yourself, quit the game and run from your checkout:
 
@@ -59,18 +59,18 @@ python3 update.py
 Or run the installed updater:
 
 ```bash
-python3 "${XDG_DATA_HOME:-$HOME/.local/share}/driftdogs/update.py"
+python3 "${XDG_DATA_HOME:-$HOME/.local/share}/riftdogs/update.py"
 ```
 
 The updater checks the official origin and clean `main` branch, fetches, fast-forwards and reruns installation. It stops on local edits, untracked files or divergent history; it never resets your work. Keep the original checkout available. If you move or delete it, clone again and reinstall. Saved progress is preserved.
 
 ## Play
 
-You start docked with 150 credits, a full 7-unit fuel tank, a pulse laser, three missiles and a 20-tonne hold. Food is cheap on agricultural Halvora and more valuable on industrial Corvant. Industrial exports tend to sell well on agricultural worlds. Keep enough credits for fuel and repairs.
+You start docked with 400 credits, a full 7-unit fuel tank, a pulse laser, three missiles and a 20-tonne hold. Food is cheap on agricultural Halvora and more valuable on industrial Corvant. Industrial exports tend to sell well on agricultural worlds. Keep enough credits for fuel and repairs.
 
 | Screen | Controls |
 | --- | --- |
-| Screens (from anywhere) | 0 home (market or cockpit); 1 Nav; 2 VMS; 3 Money; 4 Menu; 5 Comms (DSC); 6 statement; 8 engineering; 9 help; Ctrl+0 feedback. Press again to go back. Buttons for 5–0 run down the right-hand side |
+| Screens (from anywhere) | 0 home (market or cockpit); 1 Nav; 2 VMS; 3 Money; 4 Menu; 5 Comms (DSC); 6 statement; 7 cargo (what's aboard and where it sells best, docked or in flight); 8 engineering; 9 help; Ctrl+0 feedback. Press again to go back. Buttons for 5–0 run down the right-hand side |
 | Station | Up/Down select; B buy; S sell; U outfitting; L requests departure clearance, then L launches once granted |
 | VMS (2) | F buys a full fuel refill; K sells fuel; R repairs hull; U outfitting; L launch |
 | Outfitting | Up/Down browse; B or Enter buy and fit; U returns to market |
@@ -186,29 +186,29 @@ Connection settings (from the start screen) has **Remove my email** and **Delete
 
 ## Saves and files
 
-Game files install under `${XDG_DATA_HOME:-~/.local/share}/driftdogs/`. The launcher is in the same data directory under `applications/driftdogs.desktop`.
+Game files install under `${XDG_DATA_HOME:-~/.local/share}/riftdogs/`. The launcher is in the same data directory under `applications/riftdogs.desktop`.
 
-The save is `driftdogs/save.json`. Per-commander repair cooldowns are stored alongside it as `engineering-<commander-id>.json`; back these up with the save. Live flight and station transactions save automatically, including clean exits and destruction. Original saves are migrated, preserving cash, cargo, equipment and location. The `_session` section records the current simulation for restart/catch-up. N on the death screen explicitly starts a new pilot and replaces all assets. Back up `save.json` before experimenting with it.
+The save is `riftdogs/save.json`. Per-commander repair cooldowns are stored alongside it as `engineering-<commander-id>.json`; back these up with the save. Live flight and station transactions save automatically, including clean exits and destruction. Original saves are migrated, preserving cash, cargo, equipment and location. The `_session` section records the current simulation for restart/catch-up. N on the death screen explicitly starts a new pilot and replaces all assets. Back up `save.json` before experimenting with it.
 
 Remove installed code and launcher while keeping your save:
 
 ```bash
 data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
-rm -f "$data_dir/applications/driftdogs.desktop"
-rm -f "$data_dir/driftdogs/driftdogs.py" "$data_dir/driftdogs/update.py"
-rm -f "$data_dir/driftdogs/README.md" "$data_dir/driftdogs/LICENSE" "$data_dir/driftdogs/install-info.json"
+rm -f "$data_dir/applications/riftdogs.desktop"
+rm -f "$data_dir/riftdogs/riftdogs.py" "$data_dir/riftdogs/update.py"
+rm -f "$data_dir/riftdogs/README.md" "$data_dir/riftdogs/LICENSE" "$data_dir/riftdogs/install-info.json"
 ```
 
 ## Development checks
 
 ```bash
-python3 driftdogs.py --version
-python3 driftdogs.py --self-test
+python3 riftdogs.py --version
+python3 riftdogs.py --self-test
 python3 -m unittest -v test_game test_updater
-SDL_VIDEODRIVER=dummy python3 driftdogs.py --smoke-test
+SDL_VIDEODRIVER=dummy python3 riftdogs.py --smoke-test
 ```
 
-You can run `python3 driftdogs.py` directly without installing. System libraries and a supported font still need to be present. Rendering uses system SDL2 and SDL2_ttf through Python ctypes.
+You can run `python3 riftdogs.py` directly without installing. System libraries and a supported font still need to be present. Rendering uses system SDL2 and SDL2_ttf through Python ctypes.
 
 ## License
 
@@ -332,7 +332,7 @@ Fuel scoops collect at 150-500m from the sun, speed 10-60. Shields slow heating;
 above 70% heat radiation drains them, and hull damage follows shield failure.
 90% is the thermal danger limit. Shields do not recharge inside the solar zone;
 move beyond 600m to cool down and recharge.
-For offline testing only, close the game then run driftdogs.py
+For offline testing only, close the game then run riftdogs.py
 --grant-test-credits 100000. It backs up the save and adds credits without
 altering fines, Crymto or ship position. Multiplayer grants will require server admin authority.
 
@@ -390,8 +390,8 @@ Escape always saves and closes the game immediately, from every screen, includin
 
 ## One launcher, online or offline
 
-The opening screen uses the supplied Driftdogs splash artwork, fitted without cropping. Click Online play or Offline play, or use arrows and Enter. Online means progress saved on the Driftdogs server; shared flight and combat remain future work. Offline and server-account saves remain separate. Escape closes the opening screen without changing either save.
+The opening screen uses the supplied Riftdogs splash artwork, fitted without cropping. Click Online play or Offline play, or use arrows and Enter. Online means progress saved on the Riftdogs server; shared flight and combat remain future work. Offline and server-account saves remain separate. Escape closes the opening screen without changing either save.
 
-Connection settings let you edit the server address, private token **file path**, trusted-LAN HTTP permission and first-account import option. Tab switches fields; Ctrl+V pastes; Enter saves. Settings live in `~/.config/driftdogs/connection.json` (or XDG_CONFIG_HOME). The token itself remains in its private file. A failed connection leaves the chooser available so you can retry or play offline. `--offline` skips the chooser for direct offline launch; server CLI flags still prefill an online connection.
+Connection settings let you edit the server address, private token **file path**, trusted-LAN HTTP permission and first-account import option. Tab switches fields; Ctrl+V pastes; Enter saves. Settings live in `~/.config/riftdogs/connection.json` (or XDG_CONFIG_HOME). The token itself remains in its private file. A failed connection leaves the chooser available so you can retry or play offline. `--offline` skips the chooser for direct offline launch; server CLI flags still prefill an online connection.
 
 The installer includes the artwork as a compressed BMP so no new runtime image libraries are needed.

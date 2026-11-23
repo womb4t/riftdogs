@@ -18,12 +18,12 @@ class UpdateRequired(RuntimeError):
 def update_message(error):
     try: message = json.loads(error.read(4096)).get('error')
     except (ValueError,AttributeError,OSError): message = None
-    return message if type(message) is str and message else 'This server needs a newer Driftdogs. Update the game.'
+    return message if type(message) is str and message else 'This server needs a newer Riftdogs. Update the game.'
 
 
 def version_headers():
-    from driftdogs import VERSION
-    return {'X-Driftdogs-Version':VERSION}
+    from riftdogs import VERSION
+    return {'X-Riftdogs-Version':VERSION}
 
 
 EDITED_IMPORT = "Edited saves can't be imported."
@@ -95,7 +95,7 @@ def reachable(url, allow_lan=False, timeout=4):
         url = check_server(url,allow_lan)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
         with opener.open(url+'/health',timeout=timeout) as response:
-            return json.loads(response.read(4096)).get('service') == 'driftdogs-saves'
+            return json.loads(response.read(4096)).get('service') == 'riftdogs-saves'
     except (OSError,ValueError,AttributeError): return False
 
 
@@ -119,7 +119,7 @@ def account_request(url, endpoint, body, method='POST', token=None, allow_lan=Fa
         try: message = json.loads(error.read(4096)).get('error')
         except (ValueError,AttributeError,OSError): message = None
         error.close()
-        if error.code == 426: raise UpdateRequired(message if type(message) is str and message else 'This server needs a newer Driftdogs. Update the game.') from None
+        if error.code == 426: raise UpdateRequired(message if type(message) is str and message else 'This server needs a newer Riftdogs. Update the game.') from None
         raise RuntimeError(message if type(message) is str else f'Server returned HTTP {error.code}') from None
     except ValueError: raise RuntimeError('The server sent an invalid reply') from None
 

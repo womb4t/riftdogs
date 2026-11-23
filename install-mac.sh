@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Install Driftdogs on macOS with nothing extra: no Xcode tools, git, Homebrew or system Python.
-#   curl -fsSL https://raw.githubusercontent.com/womb4t/driftdogs/main/install-mac.sh | bash
-# Everything the game needs (a private Python, SDL2 and SDL2_ttf) goes inside ~/Applications/Driftdogs.app.
+# Install Riftdogs on macOS with nothing extra: no Xcode tools, git, Homebrew or system Python.
+#   curl -fsSL https://raw.githubusercontent.com/womb4t/riftdogs/main/install-mac.sh | bash
+# Everything the game needs (a private Python, SDL2 and SDL2_ttf) goes inside ~/Applications/Riftdogs.app.
 set -euo pipefail
 if [[ "$(uname)" != Darwin ]]; then
   echo 'This installer is for macOS. On Omarchy, run install.sh instead.' >&2
   exit 1
 fi
 
-app="$HOME/Applications/Driftdogs.app"
+app="$HOME/Applications/Riftdogs.app"
 contents="$app/Contents"
 
 work="$(mktemp -d)"
@@ -22,21 +22,21 @@ download() {  # url, destination, sha256 (empty to skip the check)
   fi
 }
 
-# 1. Game files: this checkout when run from one (or DRIFTDOGS_SOURCE), otherwise the latest release.
+# 1. Game files: this checkout when run from one (or RIFTDOGS_SOURCE), otherwise the latest release.
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || true)"
-if [[ -n "${DRIFTDOGS_SOURCE:-}" ]]; then
-  source_dir="$DRIFTDOGS_SOURCE"
-elif [[ -n "$script_dir" && -f "$script_dir/driftdogs.py" && -f "$script_dir/install.py" ]]; then
+if [[ -n "${RIFTDOGS_SOURCE:-}" ]]; then
+  source_dir="$RIFTDOGS_SOURCE"
+elif [[ -n "$script_dir" && -f "$script_dir/riftdogs.py" && -f "$script_dir/install.py" ]]; then
   source_dir="$script_dir"
 else
-  repo=womb4t/driftdogs
+  repo=womb4t/riftdogs
   tag="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)" || tag=''
-  [[ -n "$tag" ]] || { echo 'Could not find the latest Driftdogs release.' >&2; exit 1; }
-  echo "Downloading Driftdogs $tag..."
+  [[ -n "$tag" ]] || { echo 'Could not find the latest Riftdogs release.' >&2; exit 1; }
+  echo "Downloading Riftdogs $tag..."
   download "https://github.com/$repo/archive/refs/tags/$tag.tar.gz" "$work/game.tar.gz" ''
   tar -xzf "$work/game.tar.gz" -C "$work"
-  source_dir="$(find "$work" -maxdepth 1 -type d -name 'driftdogs-*' | head -n 1)"
-  export DRIFTDOGS_FROM_RELEASE=1   # the download folder is temporary; don't record it as the update source
+  source_dir="$(find "$work" -maxdepth 1 -type d -name 'riftdogs-*' | head -n 1)"
+  export RIFTDOGS_FROM_RELEASE=1   # the download folder is temporary; don't record it as the update source
 fi
 
 # 2. A private Python (python-build-standalone: statically linked, one build per processor type).
@@ -50,7 +50,7 @@ esac
 python_home="$contents/Resources/python"
 python="$python_home/bin/python3"
 if [[ "$(cat "$python_home/.runtime" 2>/dev/null)" != "$runtime" ]]; then
-  echo 'Downloading Python for Driftdogs...'
+  echo 'Downloading Python for Riftdogs...'
   download "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/${runtime/+/%2B}" "$work/python.tar.gz" "$runtime_sha"
   rm -rf "$python_home"
   mkdir -p "$contents/Resources"
@@ -82,27 +82,27 @@ install_framework SDL2_ttf \
 security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > "$contents/Resources/cacert.pem"
 
 # 5. App icon from the artwork, using tools built into macOS.
-icon_png="$source_dir/assets/driftdogs-icon.png"
+icon_png="$source_dir/assets/riftdogs-icon.png"
 if [[ -f "$icon_png" ]] && command -v iconutil >/dev/null; then
-  iconset="$work/Driftdogs.iconset"
+  iconset="$work/Riftdogs.iconset"
   mkdir -p "$iconset"
   for size in 16 32 128 256 512; do
     sips -z "$size" "$size" "$icon_png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
     sips -z "$((size * 2))" "$((size * 2))" "$icon_png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
   done
-  iconutil -c icns "$iconset" -o "$source_dir/assets/Driftdogs.icns" || true
+  iconutil -c icns "$iconset" -o "$source_dir/assets/Riftdogs.icns" || true
 fi
 
 # 6. Game files, launcher and app bundle.
-DRIFTDOGS_APP="$app" "$python" "$source_dir/install.py"
+RIFTDOGS_APP="$app" "$python" "$source_dir/install.py"
 
 # The Dock names an app after the bundle holding the running binary, so the launcher runs a copy of
 # the private Python from Contents/MacOS. Make sure it really starts; otherwise run Python directly.
-interpreter="$contents/MacOS/Driftdogs"
+interpreter="$contents/MacOS/Riftdogs"
 if ! PYTHONHOME="$python_home" "$interpreter" -c 'import ctypes, json, ssl, sqlite3' >/dev/null 2>&1; then
   rm -f "$interpreter"
-  echo 'Note: using the private Python directly, so the Dock may show Python instead of Driftdogs.'
+  echo 'Note: using the private Python directly, so the Dock may show Python instead of Riftdogs.'
 fi
 # Finder caches app icons; touching the bundle makes it pick up a new one.
 touch "$app"
-echo 'Driftdogs is installed. Open it from Launchpad, Spotlight or ~/Applications.'
+echo 'Riftdogs is installed. Open it from Launchpad, Spotlight or ~/Applications.'

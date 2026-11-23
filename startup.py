@@ -15,13 +15,13 @@ import urllib.parse
 
 # The one community server for now; an invite code fills in everything else.
 DEFAULT_SERVER = 'https://141-147-67-78.sslip.io'
-INVITE_PREFIX = 'DRIFTDOGS-INVITE:'
+INVITE_PREFIX = 'RIFTDOGS-INVITE:'
 INVITE_PREFIXES = (INVITE_PREFIX,)
-EMAIL_CONSENT = "We'll only email you Driftdogs news. Remove it any time from Connection settings."
+EMAIL_CONSENT = "We'll only email you Riftdogs news. Remove it any time from Connection settings."
 
 
 def config_path():
-    return Path(os.environ.get('XDG_CONFIG_HOME') or Path.home()/'.config')/'driftdogs/connection.json'
+    return Path(os.environ.get('XDG_CONFIG_HOME') or Path.home()/'.config')/'riftdogs/connection.json'
 
 
 def load_connection():
@@ -57,7 +57,7 @@ def read_invite(code):
     """dict(server, name, token) for an old invite, or dict(server, name, claim) for a single-use one."""
     code = ''.join(code.split())
     prefix = next((p for p in INVITE_PREFIXES if code.startswith(p)),None)
-    if prefix is None: raise ValueError('That is not a Driftdogs invite code.')
+    if prefix is None: raise ValueError('That is not a Riftdogs invite code.')
     try:
         raw = code[len(prefix):]
         data = json.loads(base64.urlsafe_b64decode(raw+'='*(-len(raw)%4)))
@@ -113,7 +113,7 @@ def open_document(name):
     """Open PRIVACY.md or TERMS.md from the game folder with the system's opener: no network needed.
     Returns the status line for the player."""
     path = Path(__file__).resolve().parent/name
-    if not path.is_file(): return f'{name} is missing from the game folder. Reinstall Driftdogs to get it back.'
+    if not path.is_file(): return f'{name} is missing from the game folder. Reinstall Riftdogs to get it back.'
     try:
         if sys.platform == 'win32': os.startfile(str(path))
         else: subprocess.Popen(['open' if sys.platform == 'darwin' else 'xdg-open',str(path)],stdin=subprocess.DEVNULL,
@@ -150,7 +150,7 @@ def fetch_news(server, timeout=3):
 
 class StartScreen:
     deleting = None   # 'Delete my account' open: the commander name typed so far
-    save_root = None  # the game's data folder (holds servers/<slot>); None: driftdogs.SAVE's folder
+    save_root = None  # the game's data folder (holds servers/<slot>); None: riftdogs.SAVE's folder
     def __init__(self, display, config, error='', update=None):
         self.d,self.config,self.error = display,dict(config),error
         # A newer release must be answered before anything else: Enter installs, N or Esc plays this version until next launch.
@@ -165,11 +165,11 @@ class StartScreen:
         self.news, self.news_started = None, False
         self.replace_field = False
         self.texture = None
-        asset = Path(__file__).resolve().parent/'assets/driftdogs-splash.bmp.gz'
+        asset = Path(__file__).resolve().parent/'assets/riftdogs-splash.bmp.gz'
         try:
             raw = gzip.decompress(asset.read_bytes())
             buffer = C.create_string_buffer(raw)
-            from driftdogs import bind
+            from riftdogs import bind
             rw = bind(display.sdl,'SDL_RWFromConstMem',C.c_void_p,[C.c_void_p,C.c_int])(buffer,len(raw))
             surface = bind(display.sdl,'SDL_LoadBMP_RW',C.c_void_p,[C.c_void_p,C.c_int])(rw,1) if rw else None
             if surface:
@@ -238,13 +238,13 @@ class StartScreen:
         return False
 
     def event(self, kind, value):
-        from driftdogs import UP,DOWN,LEFT,RIGHT
+        from riftdogs import UP,DOWN,LEFT,RIGHT
         if kind == 'quit': return 'quit'
         if self.update:
             # Nothing else on the start screen works until the player answers the update question.
             if (kind == 'down' and value in (13,ord('u'),ord('y'))) or (kind == 'click' and 110 <= value[0] <= 530 and 655 <= value[1] <= 699): return 'update'
             if (kind == 'down' and value in (27,ord('n'))) or (kind == 'click' and 570 <= value[0] <= 990 and 655 <= value[1] <= 699):
-                from driftdogs import VERSION
+                from riftdogs import VERSION
                 self.update = None
                 self.error = f'Update skipped for now: playing v{VERSION}. You will be asked again next launch.'
             return None
@@ -362,7 +362,7 @@ class StartScreen:
         try: remove_email(*account,allow_lan=True)
         except (RuntimeError,ValueError) as error: self.error = str(error); return
         except OSError: self.error = 'Could not reach the server. Your email was not removed; try again later.'; return
-        self.error = 'Your email is removed from the server. You will get no Driftdogs news.'
+        self.error = 'Your email is removed from the server. You will get no Riftdogs news.'
 
     def submit_delete(self):
         from save_sync import delete_account
@@ -381,7 +381,7 @@ class StartScreen:
         try:
             root = self.save_root
             if root is None:
-                from driftdogs import SAVE
+                from riftdogs import SAVE
                 root = SAVE.parent
             shutil.rmtree(Path(root)/'servers'/slot_name(read_token(account[1])),ignore_errors=True)
         except (OSError,ValueError): pass
@@ -404,7 +404,7 @@ class StartScreen:
         except OSError: self.error = 'Could not save connection settings.'
 
     def draw(self):
-        from driftdogs import W,H,GOLD,GREEN,RED
+        from riftdogs import W,H,GOLD,GREEN,RED
         d = self.d
         d.color(d.r,0,0,0,255); d.clear(d.r)
         if self.texture:
@@ -415,7 +415,7 @@ class StartScreen:
             w,h = int(width.value*scale),int(height.value*scale)
             rect = (C.c_int*4)((W-w)//2,(600-h)//2,w,h)
             d.copy(d.r,self.texture,None,rect)
-        else: d.text(440,250,'DRIFTDOGS',GOLD)
+        else: d.text(440,250,'RIFTDOGS',GOLD)
         if self.deleting is not None:
             d.fill(40,90,1020,545,(5,15,25))
             d.text(70,110,'DELETE MY ACCOUNT / '+self.config['server'],RED)
@@ -432,7 +432,7 @@ class StartScreen:
             d.fill(40,90,1020,545,(5,15,25))
             d.text(70,110,'NEW PILOT SIGN-UP / '+self.config['server'],GOLD)
             d.text(70,155,'Pilot name (letters, numbers, _ or -). Other pilots see this name.')
-            d.text(70,250,'Email for Driftdogs news (optional)')
+            d.text(70,250,'Email for Riftdogs news (optional)')
             for i,key in enumerate(('name','email')):
                 y = 200+i*95
                 d.rect(70,y,960,44,GOLD if self.field == i else GREEN)
@@ -467,7 +467,7 @@ class StartScreen:
             for x,w,label in ((70,300,'Save settings'),(390,320,'Paste invite'),(730,300,'Back')):
                 d.rect(x,550,w,46,GREEN); d.text(x+15,562,label,GREEN)
         elif self.update:
-            from driftdogs import VERSION
+            from riftdogs import VERSION
             d.fill(90,590,920,128,(5,15,25)); d.rect(90,590,920,128,GOLD)
             d.text(110,605,f'UPDATE {self.update} IS READY. Install it before you play? (you are on v{VERSION})',GOLD)
             d.text(110,630,'Your saved game and settings are kept.',GREEN)
@@ -493,7 +493,7 @@ class StartScreen:
 
     def install(self, run):
         """Run the update in the background while the window keeps drawing; False leaves the current version playable."""
-        from driftdogs import VERSION
+        from riftdogs import VERSION
         latest,done = self.update,[]
         self.update,self.installing,self.auto_at = None,True,None
         self.error = f'Installing update {latest}… your saved game is kept'

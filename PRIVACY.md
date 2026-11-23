@@ -1,4 +1,4 @@
-# Driftdogs privacy notice
+# Riftdogs privacy notice
 
 Offline play keeps everything on your own computer: nothing is sent anywhere.
 
@@ -8,7 +8,7 @@ When you play online, the server you joined keeps the following.
 
 - **Your commander name**, so other pilots can see you and the server knows whose save is whose.
 - **Your private login**, kept on the server only in a scrambled form that can't be turned back into the login. The login itself stays on your computer.
-- **Your email, if you gave one**, and when you gave it. It is used only to send Driftdogs news: never sold, shared or used for anything else.
+- **Your email, if you gave one**, and when you gave it. It is used only to send Riftdogs news: never sold, shared or used for anything else.
 - **Your saves** and a short history of recent ones, so you can play from any computer and recover from a lost or broken save.
 - **Trade records**: what you bought and sold, where and when, at what price, and payment codes you made or redeemed. They keep the shared markets working and fair.
 - **Feedback**: the bug reports and suggestions you send from the game, with your commander name, game version, computer platform, the screen you were on and your star system, so they can be fixed.
@@ -17,7 +17,7 @@ When you play online, the server you joined keeps the following.
 
 ## The waiting list
 
-If you join the waiting list on driftdogsgame.com, we keep **your email address and when you joined**, and nothing else. We use it only to email you when there's a place for you, and with occasional Driftdogs news: never sold, shared or used for anything else. To leave the list, email hello@driftdogsgame.com from that address. Waiting-list addresses are deleted after 24 months.
+If you join the waiting list on riftdogs.com, we keep **your email address and when you joined**, and nothing else. We use it only to email you when there's a place for you, and with occasional Riftdogs news: never sold, shared or used for anything else. To leave the list, email hello@riftdogs.com from that address. Waiting-list addresses are deleted after 24 months.
 
 ## How long it is kept
 
