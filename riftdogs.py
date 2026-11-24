@@ -28,7 +28,7 @@ import payments
 import seal
 import secrets
 
-VERSION = '0.10.1'
+VERSION = '0.10.2'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
@@ -5494,7 +5494,7 @@ class Game:
                 d.rect(x,18,w,32,GOLD)
             for i,(n,label,lit) in enumerate(RAIL):
                 y = 80+i*44
-                self.mouse_button(PANEL_W-8,y,100,label,ord(str(n)))
+                self.mouse_button(PANEL_W-8,y,100,label,action=lambda n=n:self.open_screen(n))
                 if self.mode in lit: d.rect(PANEL_W-8,y,100,32,GOLD)
         modal = self.mode not in ('market','flight','cruise','hyperspace','dead','prison')
         self.mouse_button(545,18,85,'Back' if modal else 'Quit',action=self.mouse_back)

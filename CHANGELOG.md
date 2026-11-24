@@ -1,3 +1,7 @@
+# 0.10.2 — rail buttons fixed
+
+- **Clicking the right-hand buttons in flight now opens the screen on the button.** Before, clicking 6 to 0 with the mouse while flying could do something else instead: 7 Cargo asked for docking clearance and 6 Ledger could send a distress call. The number keys always worked.
+
 # 0.10.1 — trading pays
 
 - **New name: Riftdogs.** Driftdogs is now Riftdogs, at riftdogs.com. Install it fresh with the commands in the README; the online galaxy and your commander carry on.
