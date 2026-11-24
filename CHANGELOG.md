@@ -1,3 +1,16 @@
+# 0.11.0 — the communicator
+
+Every ship now has a number, and you can talk to other pilots.
+- **Ship numbers.** Online, your ship gets a number like RD-4471. It is yours for good, and never reissued to anyone else.
+- **Comms panel (5).** Press 5 to open a comms panel beside the cockpit while you keep flying; Enter types a line and Enter sends. Docked, it replaces the Commander Status panel while open.
+- **Full comms page (Ctrl+5).** The log with filters, your contacts and requests, the Distress tab (DSC alerts, which you acknowledge to track), missions and info. Backspace returns.
+- **Channel 16** reaches every pilot in your star system. **Direct messages** reach your contacts anywhere and wait for them if they are offline, up to 30 days.
+- **Three ways to swap numbers:** docked together, hailing in flight, or typing a number in. Characters will introduce you in later releases.
+- **Priorities:** Mayday, Pan-Pan, Sécurité and routine: P on the panel steps through them. Mayday and Pan-Pan carry your ship number and system. Calls also show on a strip above the news ticker.
+- **Blocking and reports.** Blocking is silent. Report a message and the operator reads it. Rate limits keep it quiet: messages, contact requests and reports are limited per ship.
+- **Solar flares** hold direct messages until the flare ends; channel 16 still works inside your system.
+- Messages and contact requests are deleted after 30 days, and deleting your account deletes all of it. See PRIVACY.md.
+
 # 0.10.2 — rail buttons fixed
 
 - **Clicking the right-hand buttons in flight now opens the screen on the button.** Before, clicking 6 to 0 with the mouse while flying could do something else instead: 7 Cargo asked for docking clearance and 6 Ledger could send a distress call. The number keys always worked.

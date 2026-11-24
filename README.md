@@ -2,7 +2,7 @@
 
 A living galaxy you trade in.
 
-An original Elite-inspired Python space game for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.10.0**.
+An original Elite-inspired Python space game for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.11.0**.
 
 Play offline, or play online in a shared living galaxy: other commanders' ships on your scanner, a shared market, the Relay's news ticker and payment codes. Online play uses the official Riftdogs server, which saves your progress. Offline play needs nothing. Shared combat is a future project. The phased development plan is in [ROADMAP.md](ROADMAP.md).
 
@@ -70,7 +70,7 @@ You start docked with 400 credits, a full 7-unit fuel tank, a pulse laser, three
 
 | Screen | Controls |
 | --- | --- |
-| Screens (from anywhere) | 0 home (market or cockpit); 1 Nav; 2 VMS; 3 Money; 4 Menu; 5 Comms (DSC); 6 statement; 7 cargo (what's aboard and where it sells best, docked or in flight); 8 engineering; 9 help; Ctrl+0 feedback. Press again to go back. Buttons for 5–0 run down the right-hand side |
+| Screens (from anywhere) | 0 home (market or cockpit); 1 Nav; 2 VMS; 3 Money; 4 Menu; 5 comms panel (Ctrl+5 full comms page); the page's Distress tab acknowledges DSC alerts; 6 statement; 7 cargo (what's aboard and where it sells best, docked or in flight); 8 engineering; 9 help; Ctrl+0 feedback. Press again to go back. Buttons for 5–0 run down the right-hand side |
 | Station | Up/Down select; B buy; S sell; U outfitting; L requests departure clearance, then L launches once granted |
 | VMS (2) | F buys a full fuel refill; K sells fuel; R repairs hull; U outfitting; L launch |
 | Outfitting | Up/Down browse; B or Enter buy and fit; U returns to market |
@@ -87,6 +87,7 @@ You start docked with 400 credits, a full 7-unit fuel tank, a pulse laser, three
 | Free map cursor | Tab switches between planet selection and coordinate cursor; arrows move cursor |
 | Course/travel | Enter locks course; hold H for 3 seconds to enter hyperspace; T interstellar cruise; T in cruise cancels |
 | Scanner | Click a ship contact to select it; Tab cycles ship targets |
+| Comms panel (5) | Enter types a line, Enter sends, Tab changes channel, Backspace on an empty line stops typing (Esc still saves and closes) |
 | General | Backspace back; ` menu; Ctrl+N quick note; Ctrl+M full screen; Esc saves and closes |
 
 ### Mouse controls
@@ -174,7 +175,18 @@ Robot pirates can attack from ahead or astern; missiles and mines can help again
 
 The bought signal jammer (Z) disrupts targeting for eight seconds, costs 0.05 fuel and has a 20-second cooldown. The bought phase cloak (K) prevents robot targeting while active, burns 0.012 fuel per second and slows shield regeneration. Firing a laser or missile, or deploying a mine, drops the cloak. These are original game mechanics rather than reproductions of Elite's anti-missile ECM.
 
-Narcotics and unlicensed arms are marked `*` in the market. Regulated stations may inspect arriving cargo, confiscate contraband and issue fines. Frontier anarchies/feudal worlds do not run these checks. Outstanding fines can attract robot police; destroying a police ship increases the fine rather than paying a bounty. P at a station clears a fine if you can afford it.
+Narcotics and unlicensed arms are marked `*` in the market. Regulated stations may inspect arriving cargo, confiscate contraband and issue fines. Frontier anarchies/feudal worlds do not run these checks. Outstanding fines can attract robot police; destroying a police ship increases the fine rather than paying a bounty. Pay a fine at a station from Money (3) then F, if you can afford it.
+
+## The communicator
+
+Online, every ship has a **ship number** such as `RD-4471`. The server issues it, it belongs to your account, and it is never given to anyone else.
+
+- **Press 5** for the comms panel beside the cockpit (or the market, when docked); **Ctrl+5** opens the full comms page, with the log, your contacts, distress alerts, missions and info. Backspace returns from the page.
+- **Channel 16** reaches every pilot in the same star system. Direct messages go only to your **contacts**, wherever they are, and wait for them if they are offline (for up to 30 days).
+- **Three ways to swap numbers:** offer yours to a pilot docked at the same station; offer it to a pilot in hailing range in flight; or type in a number you were given. A number becomes a contact when the other pilot accepts. Characters will introduce you to pilots in later releases.
+- **Blocking** is silent: the other pilot is not told, and nothing from them reaches you. Unblock from the contacts list. You can also report a message, which the server operator reads.
+- **Priorities** follow marine radio: Mayday (distress), Pan-Pan (urgency), Sécurité (safety) and routine. Press P with the panel open (or click the priority on its TO line) to step through them; after a Mayday or Pan-Pan it goes back to routine. Mayday and Pan-Pan calls carry your ship number and system automatically.
+- During a solar flare, direct messages are held until it ends; channel 16 still works inside your system. Messages are plain text, 1 to 280 characters.
 
 ## Payment codes
 

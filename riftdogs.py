@@ -28,7 +28,7 @@ import payments
 import seal
 import secrets
 
-VERSION = '0.10.2'
+VERSION = '0.11.0'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
@@ -78,7 +78,7 @@ EQUIPMENT = [
     ('mine', 'Proximity mine', 75, 4, 'L lays one; 1.5 second arming delay; keep clear'),
     ('jammer', 'Signal jammer', 600, 3, 'Z disrupts targeting for 8s; 20s cooldown'),
     ('cloak', 'Phase cloak', 3000, 11, 'K toggles concealment; consumes fuel'),
-    ('dsc', 'DSC comms console', 450, 3, '5 Comms: distress alerts with identity, nature and position; acknowledge to track'),
+    ('dsc', 'DSC comms console', 450, 3, 'Ctrl+5 comms page, Distress tab: alerts with identity, nature and position; acknowledge to track'),
     ('rear', 'Rear laser mount', 600, 4, 'Comes with a pulse laser; in rear view (F), V mounts any laser you own'),
     ('lrscan', 'Long-range scanner', 900, 6, 'Ctrl+L or RNG: radar out to 25 km; finds distress calls (DSC names them)'),
 ]
@@ -135,9 +135,41 @@ ANY_CTRL = {ord('n'): ord('-'), ord('m'): ord('3')}   # quick note; full screen 
 TOP_BAR = ((155,90,'1 Nav',('open_navigation',)), (250,90,'2 VMS',('open_hub','vms')),
            (345,105,'3 Money',('open_hub','money')), (455,85,'4 Menu',('open_utility','menu')))
 # The rail down the right-hand side: the screens on the number row past 4 (x, label, key, the modes it lights).
-RAIL = ((5,'5 Comms',('dsc',)), (6,'6 Ledger',('trades',)), (7,'7 Cargo',('cargo',)), (8,'8 Engine',('engineering',)), (9,'9 Manual',('help',)), (0,'0 Home',()))
+RAIL = ((5,'5 Comms',('comms',)), (6,'6 Ledger',('trades',)), (7,'7 Cargo',('cargo',)), (8,'8 Engine',('engineering',)), (9,'9 Manual',('help',)), (0,'0 Home',()))
 HOLD_SCREENS = ('hyperspace', 'dead', 'prison', 'intro', 'hail', 'distress', 'departure', 'trade_deal')
 GREEN, GOLD, RED = (68, 227, 182), (255, 206, 113), (255, 112, 100)
+# The communicator in the cockpit: 5 opens a side panel over the right of the view (or the docked status panel).
+COMMS_PANEL = (790, 70, 300, 680)    # x, y, w, h
+COMMS_PANEL_MODES = ('flight', 'cruise', 'market')
+COMMS_PANEL_LINES = 14               # the latest messages it shows
+COMMS_WRAP = 25                      # characters a panel row holds
+# Quick replies on the panel: (button, what is sent to the panel's channel).
+COMMS_QUICK = (('Affirmative','Affirmative, over.'), ('Negative','Negative, over.'),
+               ('Say again','Say again, over.'), ('On my way','On my way, over.'))
+# The full comms page (Ctrl+5): its tabs and the log's filters.
+COMMS_TABS = {1: '1 Log', 2: '2 Contacts', 3: '3 Distress', 4: '4 Missions', 5: '5 Info', 6: '6 ////'}
+COMMS_FILTERS = ('All', 'Ch16', 'Direct', 'Distress+Urgency', 'Unread', 'Contact')
+# The panel's priority (P, or click it), in the order P steps through, with what the TO line shows.
+COMMS_PRIORITIES = (('routine','ROUTINE'), ('safety','SÉCURITÉ'), ('urgency','PAN-PAN'), ('distress','MAYDAY'))
+COMMS_HAIL_RANGE = 1500.             # metres: flying pilots this close may offer numbers (the server checks too)
+COMMS_PAGE_WRAP = 88                 # characters a page log row holds
+STRIP_Y = 737
+PIRATE_TAUNTS = ('Cut your drive and dump your hold. Nobody needs to get hurt.',
+                 'Nice cargo. Shame about the pilot.',
+                 'You are a long way from the patrol, trader.',
+                 'Heave to, or we take it off your wreck.')                        # the line above the ticker for direct, distress and urgency messages
+DIRECT_COLOR = (140, 185, 255)
+
+
+def comms_max_text():
+    import comms
+    return comms.MAX_TEXT
+
+
+def comms_number(text):
+    """True for a ship number, RD- and four digits."""
+    import comms
+    return type(text) is str and bool(comms.NUMBER_RE.fullmatch(text))
 WANTED_COLOR, SURPLUS_COLOR = (240, 150, 70), (110, 170, 240)  # station stock the economy wants or has too much of
 SYSTEMS = [
     ('Halvora', 'Agricultural', 0.15, 0.40), ('Corvant', 'Industrial', 0.40, 0.20),
@@ -1175,6 +1207,18 @@ class Game:
         self.world_basis = [[1.,0.,0.],[0.,1.,0.],[0.,0.,1.]]
         self.world_epoch = uuid.uuid4().hex
         self.other_players = {}
+        from comms import CommsLog
+        self.comms = CommsLog()   # offline: only local() lines; main() hands it to the presence client when online
+        self.comms_panel = self.comms_typing = False
+        self.comms_line, self.comms_channel = '', 'ch16'   # what is being typed; ch16 or a contact's number
+        self.comms_priority = 'routine'   # the next message's priority; back to routine after a Mayday or Pan-Pan
+        # The full comms page: which tab, the log's filter and scroll, the selected row, the Type a number field.
+        # comms_log_select counts back from the newest message the Log shows; comms_contact is the Contact filter's number.
+        self.comms_return, self.comms_tab, self.comms_filter, self.comms_log_select, self.comms_select = 'market', 1, 0, 0, 0
+        self.comms_contact = None
+        self.comms_number_typing, self.comms_number_text = False, ''
+        self.comms_unread_after = 0     # messages from this arrival number on were unread when the page opened
+        self.panel_buttons = []         # the comms panel's own buttons, drawn over the cockpit
         self.traffic = []  # bot trader ships near the station
         self.market = None  # local market; replaced by the shared one online (see update_market)
         self.market_client = None
@@ -1197,6 +1241,7 @@ class Game:
         self.station_strike_at = 0.
         self.surrendering = False
         self.station_laser_warning = False
+        self.station_laser_firing = False
         self.station_laser_timer = 15.
         self.enemy_police_system = None
         self.course_assist = False
@@ -1359,8 +1404,8 @@ class Game:
             if mode in ('market','outfit','departure','launch_warning','bank','jobs','exchange','trade_deal','redeem','prison'): return 'market'
             if mode == 'trades': mode = 'money'; continue
             if mode in ('flight','cruise','hyperspace','dead'): return mode
-            if mode in ('hail','dsc'): return 'flight'
-            attr = {'money':'money_return','vms':'vms_return','help':'help_return','updates':'update_return','map':'map_return','menu':'menu_return','notes':'notes_return','rename':'rename_return','intro':'intro_return','feedback':'feedback_return','planet_profile':'map_return','engineering':'engineering_return','cargo':'cargo_return'}.get(mode)
+            if mode == 'hail': return 'flight'
+            attr = {'comms':'comms_return','money':'money_return','vms':'vms_return','help':'help_return','updates':'update_return','map':'map_return','menu':'menu_return','notes':'notes_return','rename':'rename_return','intro':'intro_return','feedback':'feedback_return','planet_profile':'map_return','engineering':'engineering_return','cargo':'cargo_return'}.get(mode)
             if not attr: return 'flight'
             mode = getattr(self,attr,'flight')
         return 'flight'
@@ -1499,6 +1544,9 @@ class Game:
 
     def update(self,dt):
         before = self.mode
+        if self.comms_shown() or self.mode == 'comms': self.comms.mark_read()   # what the panel or page shows has been seen
+        if self.comms_typing and not self.comms_shown(): self.comms_typing,self.comms_line = False,''
+        if self.comms_number_typing and self.mode != 'comms': self.comms_number_typing,self.comms_number_text = False,''
         # Play time for Money / Reports, written to the ledger every ten seconds or so.
         self.play_seconds = getattr(self,'play_seconds',0.)+min(dt,1.)
         if self.mode in ('intro','prison'): self.play_seconds = 0.
@@ -1606,7 +1654,12 @@ class Game:
         self.other_players = nearby
 
     def player_label(self, obj):
-        return next(('PLAYER '+p['name'] for p in self.other_players.values() if p['object'] is obj),None)
+        return next(('PLAYER '+self.player_tag(p['name']) for p in self.other_players.values() if p['object'] is obj),None)
+
+    def player_tag(self, name):
+        """A nearby pilot's name, with their ship number when they are one of your contacts."""
+        number = next((c.get('number') for c in self.comms.contact_list() if c.get('name') == name), None)
+        return f'{name} {number}' if type(number) is str and comms_number(number) else name
 
     @staticmethod
     def swept_ship_distance(start,end):
@@ -1772,7 +1825,7 @@ class Game:
 
     def request_launch(self):
         if self.p.fine and PROFILES[self.p.system][0] not in ('Anarchy','Feudal'):
-            self.message = f'STATION CONTROL: launch clearance withheld until your {self.p.fine} cr fine is paid: 3 Money, then F Pay fines.'
+            self.message = f'STATION CONTROL: launch clearance withheld until your {self.p.fine} cr fine is paid: 3 Money, then F Pay fines.'; self.radio('STATION CONTROL','safety')
             return
         if self.launch_warnings():
             self.launch_return = self.mode
@@ -2041,6 +2094,7 @@ class Game:
         else:
             self.docking_pending = 2.
             self.message = 'Docking clearance requested. Await station response.'
+            self.comms.local('YOU',f'{SYSTEMS[self.p.system][0]} Control, this is {self.comms_callsign()}, request docking, over.')
 
     def station_hostile(self, reason):
         if self.p.deep_space: return
@@ -2051,7 +2105,7 @@ class Game:
         self.station_hostile_until[self.p.system] = time.time()+HOSTILITY_COOLDOWN_SECONDS
         self.dock_clearance = self.docking_pending = 0.
         self.autodock = self.course_assist = False
-        self.message = 'STATION DEFENCE: '+reason+' Docking revoked; police response authorised!'
+        self.message = 'STATION DEFENCE: '+reason+' Docking revoked; police response authorised!'; self.radio('STATION CONTROL','urgency')
         self.checkpoint()
 
     def can_settle(self):
@@ -2064,7 +2118,7 @@ class Game:
         cost = self.p.fine
         if self.p.spend(cost,'Fine (police)') is None:
             self.surrender()
-            self.message = f'POLICE: the fine is {cost} cr and you cannot pay. Surrender accepted instead: dock to be arrested.'
+            self.message = f'POLICE: the fine is {cost} cr and you cannot pay. Surrender accepted instead: dock to be arrested.'; self.radio('POLICE','safety')
             return
         self.p.book('fines',-cost)
         self.p.fine = 0
@@ -2079,7 +2133,7 @@ class Game:
         self.security_elapsed,self.security_warning,self.security_dispatch = 0.,0,0.
         self.station_laser_warning,self.station_laser_timer = False,15.
         self.dock_clearance,self.docking_pending = 120,0
-        self.message = f'POLICE: {cost} cr fine paid by radio. Stand-down given; you are cleared to dock. Fly straight in.'
+        self.message = f'POLICE: {cost} cr fine paid by radio. Stand-down given; you are cleared to dock. Fly straight in.'; self.radio('POLICE')
         self.alert = None
         self.checkpoint()
 
@@ -2093,7 +2147,7 @@ class Game:
             self.enemy = self.ship_target = self.enemy_police_system = None
         self.station_laser_warning,self.station_laser_timer = False,15.
         self.dock_clearance,self.docking_pending = 120,0
-        self.message = 'SURRENDER ACCEPTED: police stand down. Fly straight in and dock to be arrested. Firing or leaving cancels it.'
+        self.message = 'SURRENDER ACCEPTED: police stand down. Fly straight in and dock to be arrested. Firing or leaving cancels it.'; self.radio('POLICE','safety')
         self.checkpoint()
 
     def cancel_surrender(self, reason):
@@ -2101,7 +2155,7 @@ class Game:
         self.surrendering = False
         self.dock_clearance = 0
         self.security_dispatch = 0
-        self.message = f'SURRENDER VOID: {reason} Police response resumes!'
+        self.message = f'SURRENDER VOID: {reason} Police response resumes!'; self.radio('POLICE','urgency')
         self.alert = dict(text=self.message,remaining=5.,elapsed=0.)
 
     def beacons(self):
@@ -2146,6 +2200,7 @@ class Game:
         self.message = (f'STATION CONTROL: stray fire hit our hull! {STRAY_SHOT_FINE} cr fine. Cease fire'
                         +(f' - {left} more hit{"s" if left > 1 else ""} and police launch.' if left else ' NOW - next hit launches police.')
                         +' Pay fines before your next launch.')
+        self.radio('STATION CONTROL','safety')
         self.alert = dict(text=self.message,remaining=5.,elapsed=0.)
         self.checkpoint()
 
@@ -2157,7 +2212,7 @@ class Game:
         self.enemy = [self.station[0]+90,self.station[1]+50,max(300.,self.station[2]-150),10,0.]
         self.security_dispatch = 15.
         remaining = self.p.station_police_remaining[self.p.system]
-        self.message = f'STATION POLICE launched. Station reserve: {remaining}/{STATION_POLICE_CAPACITY}.'
+        self.message = f'STATION POLICE launched. Station reserve: {remaining}/{STATION_POLICE_CAPACITY}.'; self.radio('STATION CONTROL','safety',f'Police launched. Station reserve: {remaining}/{STATION_POLICE_CAPACITY}.')
         self.checkpoint()
         return True
 
@@ -2181,10 +2236,10 @@ class Game:
         self.security_elapsed += dt
         if not self.security_warning:
             self.security_warning = 1
-            self.message = f'STATION WARNING: no clearance! Press R to request docking, or withdraw. Police in {SECURITY_GRACE} seconds.'
+            self.message = f'STATION WARNING: no clearance! Press R to request docking, or withdraw. Police in {SECURITY_GRACE} seconds.'; self.radio('STATION CONTROL','safety')
         if self.security_elapsed >= SECURITY_GRACE-8 and self.security_warning == 1:
             self.security_warning = 2
-            self.message = 'FINAL STATION WARNING: press R for clearance or withdraw! Police in 8 seconds.'
+            self.message = 'FINAL STATION WARNING: press R for clearance or withdraw! Police in 8 seconds.'; self.radio('STATION CONTROL','urgency')
         if self.security_elapsed >= SECURITY_GRACE:
             self.station_hostile('Unauthorised docking approach.')
             self.minor_offence = self.p.system
@@ -2193,12 +2248,14 @@ class Game:
     def update_station_lasers(self, dt):
         if not self.station_overwhelmed() or math.sqrt(sum(v*v for v in self.station)) > 2500:
             self.station_laser_warning = False
+            self.station_laser_firing = False
             self.station_laser_timer = 15.
             return
         if not self.station_laser_warning:
             self.station_laser_warning = True
+            self.station_laser_firing = False
             self.station_laser_timer = 15.
-            self.message = 'STATION WARNING: police defeated. Dock or withdraw beyond 2500m within 15 seconds; station lasers will fire!'
+            self.message = 'STATION WARNING: police defeated. Dock or withdraw beyond 2500m within 15 seconds; station lasers will fire!'; self.radio('STATION CONTROL','urgency')
             return
         self.station_laser_timer -= dt
         if self.station_laser_timer <= 0:
@@ -2206,6 +2263,8 @@ class Game:
             self.enemy_shot = dict(position=self.station[:],kind='station',remaining=.35)
             self.damage(12)
             self.message = 'STATION DEFENCE: station lasers firing. Dock or withdraw!'
+            if not self.station_laser_firing: self.radio('STATION CONTROL','urgency')
+            self.station_laser_firing = True
 
     def breakdown_risk(self, next_flight=False):
         flights = self.p.flights_since_service + int(next_flight)
@@ -2561,6 +2620,7 @@ class Game:
         left = STRAY_SHOT_LIMIT-ship['strikes']
         self.message = (f'RADIO, disabled ship: "Cease fire! You hit us, we are a stranded vessel." Hull {ship["hull"]/40*100:.0f}%. '
                         +(f'{left} more hit{"s" if left > 1 else ""} and they fire back.' if left else 'One more hit and they fire back.'))
+        self.radio('DISABLED SHIP','urgency','Cease fire! You hit us, we are a stranded vessel.')
         self.alert = dict(text=self.message,remaining=5.,elapsed=0.)
 
     def distress_delay(self):
@@ -2594,48 +2654,28 @@ class Game:
         if now >= ship['lost_at'] and reach > 1500 and not ship.get('hostile'):
             self.disabled_ship = None
             if self.ship_target is ship['object']: self.ship_target = None
-            if 'dsc' in self.p.equipment: self.message = f'DSC: alert from {ship["ident"]} has stopped. Vessel lost with all hands.'
+            if 'dsc' in self.p.equipment:
+                self.message = f'DSC: alert from {ship["ident"]} has stopped. Vessel lost with all hands.'
+                self.radio('DSC','safety')
             self.assist_spawn_timer = self.distress_delay()
             return
         if 'dsc' in self.p.equipment and not ship['acknowledged'] and now >= ship['next_alert']:
             ship['next_alert'] = now+DSC_REPEAT
-            text = f'DSC DISTRESS ALERT  {ship["ident"]}  {ship["nature"].upper()}  {reach/1000:.1f} km, bearing {bearing:03d}. 5 opens the DSC console.'
+            text = f'DSC DISTRESS ALERT  {ship["ident"]}  {ship["nature"].upper()}  {reach/1000:.1f} km, bearing {bearing:03d}.'
             self.message = text
+            if not ship.get('logged'):   # the cockpit alert repeats; the log keeps the one call
+                ship['logged'] = True
+                self.radio('DSC','distress',f'MAYDAY {ship["ident"]}: {ship["nature"]}, {reach/1000:.1f} km, bearing {bearing:03d}.')
             self.alert = dict(text=text,remaining=5.,elapsed=0.)
-
-    def open_dsc(self):
-        if 'dsc' not in self.p.equipment:
-            self.message = 'No DSC comms console fitted. Outfitting sells one at tech 3+ stations.'
-            return
-        self.mode = 'dsc'
-        self.keys.clear()
 
     def acknowledge_distress(self):
         ship = self.disabled_ship
         if not ship or 'ident' not in ship: return
         ship['acknowledged'] = True
         self.ship_target = ship['object']
-        self.mode = 'flight'
+        base = self.session_mode()
+        if base in ('flight','cruise'): self.mode,self.comms_number_typing = base,False   # back to the cockpit to fly there
         self.message = f'DSC: alert from {ship["ident"]} acknowledged. Direction marker tracks them; N hails within 1,500 m.'
-
-    def draw_dsc(self):
-        d,ship = self.d,self.disabled_ship
-        d.text(35,85,'DSC COMMS CONSOLE / DISTRESS CHANNEL',GOLD)
-        if not ship or 'ident' not in ship:
-            d.text(45,150,'No distress alerts received. The console listens while you fly.',GREEN)
-        else:
-            reach,bearing = self.distress_bearing(ship['object'])
-            ago = max(0,time.time()-ship['sent'])
-            left = max(0,ship['lost_at']-time.time())
-            rows = [('Identity',ship['ident']),('Nature of distress',ship['nature'].upper()),
-                    ('Position',f'{reach/1000:.2f} km, bearing {bearing:03d} (clockwise from your nose)'),
-                    ('First alert',f'{ago/60:.0f} min ago'),('Crew estimate',f'about {math.ceil(left/60)} min of survival left' if left else 'critical'),
-                    ('Status','ACKNOWLEDGED by you' if ship['acknowledged'] else 'UNACKNOWLEDGED: repeating every minute')]
-            for i,(label,value) in enumerate(rows):
-                d.text(45,150+i*36,f'{label:<20}',(135,175,185)); d.text(330,150+i*36,value,RED if label == 'Nature of distress' else GREEN)
-            d.text(45,400,'ENTER acknowledges the alert and tracks the vessel. Fly there, then N hails it.',GOLD)
-        d.text(45,440,'Digital selective calling: each alert carries the caller\'s identity, nature of distress and position.',(135,175,185))
-        d.text(45,470,'BACKSPACE or 5 returns to the cockpit.',(135,175,185))
 
     def update_disabled_ship(self, dt):
         # A crew under attack swings what little thrust they have to aim back at you.
@@ -2903,6 +2943,8 @@ class Game:
         d.text(45,550,'Select an amount, then choose a conversion. BACKSPACE returns to Money.')
 
     def active_text_field(self):
+        if self.comms_typing_now(): return self,'comms_line',comms_max_text()
+        if self.mode == 'comms' and self.comms_number_typing: return self,'comms_number_text',7
         if self.mode == 'redeem': return (self,'pay_amount_text',6) if self.pay_field == 'amount' else (self,'credit_code_text',40)
         if self.mode == 'notes': return self.p,'notes',4000
         if self.mode == 'rename' or (self.mode == 'intro' and self.intro_page == 0): return self.p,'name',24
@@ -2920,8 +2962,9 @@ class Game:
         before = '' if self.text_selection_all and self.text_selection_mode == self.mode else getattr(owner,name)
         self.text_selection_all = False
         text = text.replace('\r\n','\n').replace('\r','\n')
-        text = ''.join(c for c in text if c.isprintable() or c == '\n' and self.mode not in ('redeem','rename','intro'))
+        text = ''.join(c for c in text if c.isprintable() or c == '\n' and self.mode not in ('redeem','rename','intro') and name != 'comms_line')
         if name in ('bank_custom','pay_amount_text'): text = ''.join(c for c in text if c.isdigit())
+        if name == 'comms_number_text': text = ''.join(c for c in text if c.isdigit() or c in 'RDrd-').upper()
         setattr(owner,name,(before+text)[:limit])
         if self.mode == 'notes': self.notes_scroll = 0
 
@@ -3584,9 +3627,15 @@ class Game:
     def keyboard(self, k, ctrl=False):
         """A key from the keyboard: the key map above, then the game's own handlers."""
         self.swallow_text = None
+        # Typing: nothing reaches the ship or screens, except Escape, the global save-and-close.
+        if self.comms_typing_now() and k != 27: return self.comms_key(k, ctrl)
+        if k == 13 and not ctrl and self.comms_shown(): return self.start_comms_typing()
         if k != 27 and self.inbox_blocks_input(): return
         if ctrl and k == ord('0'): return self.toggle_feedback()
+        if ctrl and k == ord('5'): return self.toggle_comms_page()
+        if self.mode == 'comms' and not ctrl and self.comms_page_key(k): return
         if k == 27 or self.typing(): return self.key(k)   # Esc, and typing into text fields, as before
+        if k == ord('p') and not ctrl and self.comms_shown(): return self.cycle_comms_priority()
         if k == F11: return self.key(ord('3'))             # full screen
         if ctrl and k == ord('l') and self.mode in ('flight','cruise'): return self.toggle_radar_range()
         if ctrl:
@@ -3615,9 +3664,9 @@ class Game:
             self.menu_return,self.mode = self.mode,'menu'
             self.release_mouse(); self.keys.clear()
         elif n == 5:
-            if self.mode == 'dsc': self.mode = 'flight'
-            elif self.mode in ('flight','cruise'): self.open_dsc()
-            else: self.message = 'Comms (the DSC console) work in flight.'
+            if self.mode == 'comms': self.leave_comms_page()
+            elif self.mode in COMMS_PANEL_MODES: self.toggle_comms_panel()
+            else: self.message = 'The comms panel opens in the cockpit or docked: 0 Home, then 5. Ctrl+5 opens the full comms page.'
         elif n == 6:
             if self.mode == 'trades': self.mouse_back(); return
             if self.mode != 'money': self.open_hub('money')
@@ -3631,6 +3680,515 @@ class Game:
         elif n == 9:
             if self.mode == 'help': self.mode = self.help_return
             else: self.help_return,self.mode = self.mode,'help'; self.keys.clear()
+
+    # ---- the communicator panel (5) and the radio voices that land in it
+    def comms_shown(self):
+        return self.comms_panel and self.mode in COMMS_PANEL_MODES
+
+    def comms_typing_now(self):
+        return self.comms_typing and self.comms_shown()
+
+    def toggle_comms_panel(self):
+        self.comms_panel = not self.comms_panel
+        self.comms_typing,self.comms_line = False,''
+        if self.comms_panel: self.comms.mark_read()
+
+    def start_comms_typing(self):
+        self.comms_typing,self.comms_line = True,''
+        self.keys.clear()   # a key held for flight lets go: from here keys type
+        self.release_mouse()
+
+    def comms_key(self, k, ctrl=False):
+        """A key while typing into the panel. Printable keys arrive as text input; none of them flies the ship."""
+        self.keys.discard(k)
+        if ctrl: return   # Ctrl+V and friends come as clipboard events
+        selected = self.text_selection_all and self.text_selection_mode == self.mode
+        if k == 13: self.send_comms()
+        elif k == TAB: self.cycle_comms_channel()
+        elif k == 8:
+            if not self.comms_line: self.comms_typing = False   # Backspace on an empty line stops typing
+            self.comms_line = '' if selected else self.comms_line[:-1]
+            self.text_selection_all = False
+
+    def comms_contacts(self):
+        return [c['number'] for c in self.comms.contact_list() if comms_number(c.get('number'))]
+
+    def cycle_comms_channel(self):
+        """Tab: channel 16, then each contact in turn."""
+        order = ['ch16']+self.comms_contacts()
+        current = order.index(self.comms_channel) if self.comms_channel in order else 0
+        self.comms_channel = order[(current+1)%len(order)]
+
+    def cycle_comms_priority(self):
+        order = [name for name,_ in COMMS_PRIORITIES]
+        at = order.index(self.comms_priority) if self.comms_priority in order else 0
+        self.comms_priority = order[(at+1)%len(order)]
+
+    def comms_priority_label(self):
+        return dict(COMMS_PRIORITIES).get(self.comms_priority,'ROUTINE')
+
+    def comms_channel_label(self, channel=None):
+        channel = self.comms_channel if channel is None else channel
+        if channel == 'ch16': return 'CH16'
+        name = next((c.get('name') for c in self.comms.contact_list() if c.get('number') == channel), None)
+        return f'{name} {channel}' if type(name) is str and name else channel
+
+    def send_comms(self):
+        """Enter on the type line. The line is cleared only once the message is queued, so a refusal keeps it to fix."""
+        if not self.comms_line.strip():
+            self.comms_typing,self.comms_line = False,''
+            return
+        if self.transmit(self.comms_line) or getattr(self,'presence',None) is None: self.comms_typing,self.comms_line = False,''
+
+    def transmit(self, text):
+        """Queue `text` to the panel's channel with a local YOU echo; True when it is on its way."""
+        if getattr(self,'presence',None) is None:
+            self.message = 'COMMS: offline game. Nothing is sent.'
+            return False
+        if self.comms_channel != 'ch16' and self.comms_channel not in self.comms_contacts():
+            # Never fall back to channel 16 with a private line: say so, and start from channel 16 next time.
+            self.message = f'COMMS: {self.comms_channel} is no longer a contact.'
+            self.comms_channel = 'ch16'
+            return False
+        priority = self.comms_priority if self.comms_priority in dict(COMMS_PRIORITIES) else 'routine'
+        try: self.comms.queue(self.comms_channel,text,priority)
+        except ValueError as error:
+            self.message = 'COMMS: '+str(error)
+            return False
+        import comms
+        self.comms.local('YOU',comms.clean_text(text),priority,channel=self.comms_channel)   # your own line, in the log
+        self.comms.mark_read()
+        if priority in ('distress','urgency'): self.comms_priority = 'routine'
+        return True
+
+    def comms_callsign(self):
+        """What the radio calls you: your ship number once the server has issued one, else your commander name."""
+        number = self.comms.view()['number']
+        return number if comms_number(number) else self.commander_name()
+
+    def radio(self, sender, priority='routine', text=None):
+        """A radio voice in the comms log: `text`, or today's message line without its CAPS: prefix, spoken with
+        procedure words ("RD-4471, this is Corvant Control. ... Over."). The cockpit message line is left as it is."""
+        if text is None:
+            text = self.message
+            head,sep,rest = text.partition(': ')
+            if sep and head.isupper(): text = rest
+        self.comms.local(sender,self.procedure(sender,priority,text),priority)
+
+    def procedure(self, sender, priority, text):
+        if sender == 'DSC': return text   # a digital alert, not a voice
+        text = text.strip()
+        text = text[:1].upper()+text[1:]
+        if text and text[-1] not in '.!?': text += '.'
+        world = SYSTEMS[self.p.system][0]
+        speaker = {'STATION CONTROL':f'{world} Control','POLICE':f'{world} Police','UNKNOWN SHIP':'unknown vessel',
+                   'DISABLED SHIP':'disabled vessel'}.get(sender)
+        if speaker is None: speaker = sender.title() if not sender.startswith('TRADER ') else 'freighter '+sender[7:].title()
+        call = {'distress':'MAYDAY, MAYDAY, MAYDAY. ','urgency':'PAN-PAN, PAN-PAN, PAN-PAN. ',
+                'safety':'Sécurité, Sécurité, Sécurité. '}.get(priority,'')
+        return f'{call}{self.comms_callsign()}, this is {speaker}. {text} Over.'
+
+    def comms_rows(self, message, width=COMMS_WRAP):
+        """A message as rows: who it is from, then its text wrapped to `width` (the panel's by default)."""
+        sender = message.get('sender_name') if type(message.get('sender_name')) is str else ''
+        number = message.get('sender_number')
+        channel = message.get('channel')
+        if sender == 'YOU': who = 'YOU > '+self.comms_channel_label(channel if type(channel) is str else 'ch16')
+        else: who = (sender or '?')+(' '+number if comms_number(number) else '')
+        text = message.get('text') if type(message.get('text')) is str else ''
+        text = ''.join(c if c.isprintable() else ' ' for c in text)
+        who = ''.join(c if c.isprintable() else ' ' for c in who)
+        return textwrap.wrap(f'{who}: {text}',width,break_long_words=True) or [who]
+
+    def comms_color(self, message):
+        if message.get('priority') in ('distress','urgency'): return RED
+        if message.get('priority') == 'safety': return GOLD
+        if message.get('sender_name') == 'YOU': return (135,175,185)
+        return DIRECT_COLOR if message.get('channel') == 'direct' else GREEN
+
+    def panel_button(self, x, y, w, label, action):
+        d = self.d
+        d.fill(x,y,w,24,(13,35,46))
+        d.rect(x,y,w,24,(55,125,135))
+        d.text(x+6,y+1,label,GREEN)
+        self.panel_buttons.append((x,y,w,24,action))
+
+    def quick_reply(self, text):
+        self.transmit(text)
+
+    def draw_comms_panel(self, view):
+        d = self.d
+        x,y,w,h = COMMS_PANEL
+        self.panel_buttons = []
+        d.fill(x,y,w,h,(6,14,24))
+        d.rect(x,y,w,h,(55,125,135))
+        number = view['number'] if comms_number(view['number']) else ('offline' if getattr(self,'presence',None) is None else 'no number')
+        d.text(x+10,y+6,'COMMS  '+number,GOLD)
+        self.panel_button(x+w-112,y+4,104,'Full page',self.toggle_comms_page)
+        word = self.comms_priority_label()
+        d.text(x+10,y+30,('TO '+self.comms_channel_label())[:COMMS_WRAP+1-len(word)],DIRECT_COLOR if self.comms_channel != 'ch16' else GREEN)
+        word_x = x+w-10-len(word)*11
+        d.text(word_x,y+30,word,RED if self.comms_priority in ('distress','urgency') else GOLD if self.comms_priority == 'safety' else (135,175,185))
+        self.panel_buttons.append((word_x-4,y+28,len(word)*11+8,24,self.cycle_comms_priority))   # click it to step on, like P
+        d.line(x+8,y+56,x+w-8,y+56)
+        top,bottom,step = y+62,y+h-154,22
+        rows = []
+        for message in view['messages'][-COMMS_PANEL_LINES:]:
+            color = self.comms_color(message)
+            rows += [(row,color) for row in self.comms_rows(message)]
+        rows = rows[-((bottom-top)//step):]   # newest at the bottom; long ones push the oldest off the top
+        if not rows: d.text(x+10,top,'No messages yet.',(135,175,185))
+        for i,(row,color) in enumerate(rows): d.text(x+10,top+i*step,row,color)
+        for i,(label,text) in enumerate(COMMS_QUICK):
+            self.panel_button(x+10+(i%2)*144,y+h-150+(i//2)*28,136,label,lambda text=text:self.quick_reply(text))
+        if view['errors']: d.text(x+10,y+h-88,str(view['errors'][-1])[:COMMS_WRAP],RED)
+        d.line(x+8,y+h-62,x+w-8,y+h-62)
+        if self.comms_typing_now():
+            self.text_cursor(x+10,y+h-56,'> '+self.comms_line[-(COMMS_WRAP-3):])
+            d.text(x+10,y+h-30,'ENTER sends, TAB channel' if self.comms_line else 'BACKSPACE stops typing',(135,175,185))
+        else:
+            d.text(x+10,y+h-56,'ENTER types, P priority',GREEN)
+            d.text(x+10,y+h-30,'5 closes, Ctrl+5 full page',(135,175,185))
+
+    # ---- the full comms page (Ctrl+5)
+    def toggle_comms_page(self):
+        if self.mode == 'comms': return self.leave_comms_page()
+        if self.mode in HOLD_SCREENS or self.mode == 'menu': return
+        view = self.comms.view()
+        unread,messages = view['unread'],view['messages']
+        # Remember where the unread ones start before the page marks them read: the Unread filter shows them.
+        self.comms_unread_after = (messages[-min(unread,len(messages))]['n'] if unread and messages
+                                   else (messages[-1]['n']+1 if messages else 1))
+        self.comms.mark_read()
+        self.comms_return,self.mode = self.mode,'comms'
+        self.comms_typing,self.comms_line = False,''
+        self.comms_number_typing,self.comms_number_text = False,''
+        self.comms_log_select = 0
+        if self.comms_tab not in self.comms_tabs(view): self.comms_tab = 1
+        self.alert = None
+        self.keys.clear()
+        self.release_mouse()
+
+    def leave_comms_page(self):
+        self.mode = self.comms_return if self.comms_return != 'comms' else 'market'
+        self.comms_number_typing,self.comms_number_text = False,''
+        self.keys.clear()
+
+    def comms_tabs(self, view):
+        return [1,2,3,4,5]+([6] if view.get('key') is True else [])
+
+    def comms_set_tab(self, n):
+        self.comms_tab,self.comms_select,self.comms_log_select = n,0,0
+        self.comms_number_typing = False
+
+    def comms_page_key(self, k):
+        """A key on the comms page: True when the page used it. 1-6 pick tabs here; 0, 7, 8 and 9 still open screens."""
+        if k == 27: return False   # Escape saves and closes, as everywhere
+        if self.comms_number_typing:
+            if k == 13: self.send_contact_request()
+            elif k == 8:
+                selected = self.text_selection_all and self.text_selection_mode == self.mode
+                if not self.comms_number_text: self.comms_number_typing = False   # Backspace on an empty field cancels
+                self.comms_number_text = '' if selected else self.comms_number_text[:-1]
+                self.text_selection_all = False
+            return True   # printable keys arrive as text input
+        if k == 8:
+            self.leave_comms_page()
+            return True
+        if k in (ord('0'),ord('7'),ord('8'),ord('9')): return False
+        view = self.comms.view()
+        if ord('1') <= k <= ord('6'):
+            if k-ord('0') not in self.comms_tabs(view): return False   # 6 is the Ledger, as on every screen
+            self.comms_set_tab(k-ord('0'))
+            return True
+        if self.comms_tab == 1:
+            if k in (LEFT,RIGHT): self.comms_set_filter((self.comms_filter+(1 if k == RIGHT else -1))%len(COMMS_FILTERS))
+            elif k == UP: self.comms_log_select += 1
+            elif k == DOWN: self.comms_log_select = max(0,self.comms_log_select-1)
+            elif k == ord('r'): self.comms_report_selected(view)
+            elif k == ord('c'): self.comms_set_filter(COMMS_FILTERS.index('Contact'),cycle=True)
+        elif self.comms_tab == 2:
+            rows = [row for row in self.comms_contact_rows(view) if row['actions']]
+            if k in (UP,DOWN) and rows: self.comms_select = (self.comms_select+(1 if k == DOWN else -1))%len(rows)
+            elif k == ord('n'): self.start_number_typing()
+            elif rows:
+                row = rows[min(self.comms_select,len(rows)-1)]
+                if k == 13: row['actions'][0][1]()   # Enter does the row's first button
+                else: next((action() for label,action in row['actions'] if k == ord(label[0].lower())),None)
+        elif self.comms_tab == 3:
+            if k == 13: self.acknowledge_selected_call()
+        return True
+
+    def start_number_typing(self):
+        self.comms_number_typing,self.comms_number_text = True,''
+        self.swallow_text = 'n'   # the key that opened the field may also arrive as text
+
+    def send_contact_request(self):
+        text = self.comms_number_text.strip().upper()
+        number = 'RD-'+text if text.isdigit() else text
+        if not comms_number(number):
+            self.message = 'COMMS: a ship number is RD- and four digits, e.g. RD-4471.'
+            return
+        if self.comms_act('request',f'COMMS: contact request sent to {number}.',number=number):
+            self.comms_number_typing,self.comms_number_text = False,''
+
+    def comms_act(self, do, done, **fields):
+        """A contact action for the server; `done` is said when it is queued. False when it cannot be sent."""
+        if getattr(self,'presence',None) is None:
+            self.message = 'COMMS: offline game. Nothing is sent.'
+            return False
+        try: self.comms.act(do,**fields)
+        except ValueError as error:
+            self.message = 'COMMS: '+str(error)
+            return False
+        self.message = done
+        return True
+
+    def comms_nearby(self):
+        """Pilots you may offer your number to, by the presence roster: docked at your station, or flying in this
+        system within hail range (the server's rule). [(roster id, name, metres or None when docked)]"""
+        presence = getattr(self,'presence',None)
+        snapshot = getattr(presence,'snapshot',None) if presence is not None else None
+        if type(snapshot) is not dict or type(snapshot.get('players')) is not list: return []
+        mine = self.presence_state()
+        if mine['mode'] not in ('docked','flight'): return []
+        found = []
+        for player in snapshot['players']:
+            if type(player) is not dict or type(player.get('id')) is not int or player['id'] == snapshot.get('you'): continue
+            if player.get('system') != self.p.system or player.get('mode') != mine['mode']: continue
+            name = player.get('name') if type(player.get('name')) is str else '?'
+            name = ''.join(c for c in name if c.isprintable())[:24]
+            if mine['mode'] == 'docked':
+                found.append((player['id'],name,None))
+                continue
+            position = player.get('position')
+            if type(position) is not list or len(position) != 3 or any(type(v) not in (int,float) for v in position): continue
+            reach = math.dist(mine['position'],position)
+            if reach <= COMMS_HAIL_RANGE: found.append((player['id'],name,reach))
+        return found
+
+    def comms_contact_rows(self, view):
+        """The Contacts tab, top to bottom: dicts with text and actions [(label, callable)]; headings have none."""
+        rows = []
+        def head(text): rows.append(dict(text=text,actions=[],head=True))
+        def note(text): rows.append(dict(text=text,actions=[],head=False))
+        def clean(value, limit=24): return ''.join(c for c in value if c.isprintable())[:limit] if type(value) is str else '?'
+        contacts = [c for c in view['contacts'] if comms_number(c.get('number'))]
+        head('CONTACTS')
+        for c in contacts:
+            number,name = c['number'],clean(c.get('name'))
+            rows.append(dict(text=f'{name}  {number}',actions=[('Block',lambda n=number,m=name:self.comms_block(n,m)),
+                                                                ('Report',lambda n=number:self.comms_report(n,view))]))
+        if not contacts: note('No contacts yet. Offer your number to a pilot nearby, or type one in.')
+        requests = [r for r in view['requests'] if comms_number(r.get('number'))]
+        if requests:
+            head('CONTACT REQUESTS')
+            for r in requests:
+                number,name = r['number'],clean(r.get('name'))
+                rows.append(dict(text=f'{name}  {number} would like to be a contact',actions=[
+                    ('Accept',lambda n=number:self.comms_act('accept',f'COMMS: accepting {n} as a contact.',number=n)),
+                    ('Ignore',lambda n=number:self.comms_ignore(n)),
+                    ('Block',lambda n=number,m=name:self.comms_block(n,m))]))
+        blocked = [b for b in view.get('blocked',[]) if comms_number(b.get('number'))]
+        if blocked:
+            head('BLOCKED')
+            for b in blocked:
+                number,name = b['number'],clean(b.get('name'))
+                rows.append(dict(text=f'{name}  {number}',actions=[('Unblock',lambda n=number:self.comms_unblock(n))]))
+        head('NEARBY')
+        nearby = self.comms_nearby()
+        for ship,name,reach in nearby:
+            where = 'docked here' if reach is None else f'{reach/1000:.1f} km'
+            rows.append(dict(text=f'{name}  {where}',actions=[('Offer number',lambda s=ship,m=name:self.comms_act(
+                'offer',f'COMMS: your number offered to {m}.',ship=s))]))
+        if not nearby: note('No pilots docked here or within 1.5 km.' if getattr(self,'presence',None) else 'Offline game: no other pilots.')
+        return rows
+
+    def comms_block(self, number, name):
+        self.comms_act('block',f'COMMS: {number} blocked. They are not told.',number=number)
+
+    def comms_unblock(self, number):
+        self.comms_act('unblock',f'COMMS: {number} unblocked.',number=number)
+
+    def comms_ignore(self, number):
+        self.comms_act('ignore',f'COMMS: request from {number} ignored.',number=number)
+
+    def comms_report(self, number, view):
+        """Report a contact's latest message to the operator."""
+        latest = next((m['id'] for m in reversed(view['messages']) if m.get('sender_number') == number and type(m.get('id')) is int),None)
+        if latest is None:
+            self.message = f'COMMS: nothing received from {number} to report.'
+            return
+        self.comms_act('report',f'COMMS: the latest message from {number} is reported to the operator.',message=latest)
+
+    def comms_log_filtered(self, view):
+        f = COMMS_FILTERS[self.comms_filter%len(COMMS_FILTERS)]
+        keep = {'All':lambda m:True,'Ch16':lambda m:m.get('channel') == 'ch16','Direct':lambda m:m.get('channel') not in (None,'ch16'),
+                'Distress+Urgency':lambda m:m.get('priority') in ('distress','urgency'),
+                'Unread':lambda m:type(m.get('n')) is int and m['n'] >= self.comms_unread_after and not m.get('old'),
+                'Contact':lambda m:self.comms_contact is not None and (m.get('sender_number') == self.comms_contact
+                    or (m.get('sender_name') == 'YOU' and m.get('channel') == self.comms_contact))}[f]
+        return [m for m in view['messages'] if keep(m)]
+
+    def comms_calls(self, view):
+        """Distress and urgency calls on the air (the DSC console's own alert is shown above them), newest first."""
+        return [m for m in reversed(view['messages']) if m.get('priority') in ('distress','urgency') and m.get('sender_name') != 'DSC']
+
+    def acknowledge_selected_call(self):
+        ship = self.disabled_ship
+        if 'dsc' not in self.p.equipment or not ship or 'ident' not in ship:
+            self.message = 'COMMS: no DSC alert to acknowledge. Player calls carry their system: fly there to help.'
+            return
+        self.acknowledge_distress()
+
+    def draw_comms_page(self, view):
+        d,dim = self.d,(135,175,185)
+        self.buttons = []   # the page's buttons, handed to draw_mouse_ui (which starts the list afresh)
+        if self.comms_tab not in self.comms_tabs(view): self.comms_set_tab(1)
+        number = view['number'] if comms_number(view['number']) else ('offline' if getattr(self,'presence',None) is None else 'no number yet')
+        d.text(35,64,'COMMS / '+COMMS_TABS[self.comms_tab][2:].upper(),GOLD)
+        d.text(700,64,'YOUR NUMBER  '+number,GOLD)
+        x = 35
+        for n in self.comms_tabs(view):
+            label = COMMS_TABS[n]
+            w = len(label)*11+16
+            self.mouse_button(x,92,w,label,action=lambda n=n:self.comms_set_tab(n))
+            if n == self.comms_tab: d.rect(x,92,w,32,GOLD)
+            x += w+8
+        if view['errors']: d.text(35,615,str(view['errors'][-1])[:90],RED)
+        hint = {1:'LEFT / RIGHT filter, C next contact, UP / DOWN select, R reports.',2:"UP/DOWN select; a button's first letter does it. N types a number.",
+                3:'ENTER acknowledges the selected alert.'}.get(self.comms_tab,'')
+        d.text(35,590,(hint+'  ' if hint else '')+'BACKSPACE returns.',dim)
+        if self.comms_tab == 1: self.draw_comms_log(view)
+        elif self.comms_tab == 2: self.draw_comms_contacts(view)
+        elif self.comms_tab == 3: self.draw_comms_distress(view)
+        elif self.comms_tab == 4: d.text(45,160,'No missions yet. Missions come with the Trade Dog licence.',GREEN)
+        elif self.comms_tab == 5: d.text(45,160,'No information requests yet.',GREEN)
+        elif self.comms_tab == 6: d.text(45,160,'No traffic.',GREEN)
+        self.comms_page_buttons = list(self.buttons)
+
+    def draw_comms_log(self, view):
+        d = self.d
+        x = 35
+        for i,label in enumerate(COMMS_FILTERS):
+            w = len(label)*11+16
+            if label == 'Contact': label,w = self.comms_contact_label(view),len(self.comms_contact_label(view))*11+16
+            self.mouse_button(x,138,w,label,action=lambda i=i:self.comms_set_filter(i,cycle=True))
+            if i == self.comms_filter: d.rect(x,138,w,32,GOLD)
+            x += w+8
+        messages = self.comms_log_filtered(view)
+        if messages: self.mouse_button(985,138,95,'Report',action=lambda:self.comms_report_selected(self.comms.view()))
+        self.comms_log_select = max(0,min(self.comms_log_select,len(messages)-1))
+        chosen = len(messages)-1-self.comms_log_select
+        rows,first,last = [],0,0
+        for i,message in enumerate(messages):
+            color = self.comms_color(message)
+            tag = '[CH16] ' if message.get('channel') == 'ch16' else '[DIRECT] '
+            lines = self.comms_rows(message,COMMS_PAGE_WRAP-2-len(tag))
+            lines = [('> ' if i == chosen and j == 0 else '  ')+(tag if j == 0 else '')+line for j,line in enumerate(lines)]
+            if i == chosen: first,last = len(rows),len(rows)+len(lines)-1
+            rows += [(row,GOLD if i == chosen else color) for row in lines]
+        top,fit = 185,18
+        end = len(rows)
+        if first < end-fit: end = min(len(rows),max(last+1,first+fit))   # keep the selected message in view
+        shown = rows[max(0,end-fit):end]
+        if not shown: d.text(45,top,'No contacts yet.' if COMMS_FILTERS[self.comms_filter] == 'Contact' and not self.comms_contacts() else 'Nothing here yet.',(135,175,185))
+        for i,(row,color) in enumerate(shown): d.text(45,top+i*22,row,color)
+
+    def comms_set_filter(self, i, cycle=False):
+        """Pick a Log filter. On Contact, picking it again (or C) moves to the next contact."""
+        contacts = self.comms_contacts()
+        if COMMS_FILTERS[i] == 'Contact':
+            if contacts and (self.comms_contact not in contacts or (cycle and self.comms_filter == i)):
+                at = contacts.index(self.comms_contact) if self.comms_contact in contacts and self.comms_filter == i else -1
+                self.comms_contact = contacts[(at+1)%len(contacts)]
+        self.comms_filter,self.comms_log_select = i,0
+
+    def comms_contact_label(self, view):
+        name = next((c.get('name') for c in view['contacts'] if c.get('number') == self.comms_contact),None)
+        if COMMS_FILTERS[self.comms_filter] != 'Contact' or not self.comms_contact: return 'Contact'
+        return 'Contact '+(''.join(ch for ch in name if ch.isprintable())[:16] if type(name) is str and name else self.comms_contact)
+
+    def comms_report_selected(self, view):
+        """Report the Log's selected message (any message from the server: direct or channel 16) to the operator."""
+        messages = self.comms_log_filtered(view)
+        if not messages: return
+        message = messages[len(messages)-1-max(0,min(self.comms_log_select,len(messages)-1))]
+        if type(message.get('id')) is not int:
+            self.message = 'COMMS: only messages from other pilots can be reported; this one cannot be reported.'
+            return
+        self.comms_act('report','COMMS: message reported to the operator.',message=message['id'])
+
+    def draw_comms_contacts(self, view):
+        d,dim = self.d,(135,175,185)
+        if self.comms_number_typing:
+            d.text(45,142,'Type a number',GOLD)
+            d.rect(210,138,180,32,GOLD)
+            self.text_cursor(220,142,'RD-' if not self.comms_number_text else self.comms_number_text)
+            d.text(410,142,'ENTER sends a request; BACKSPACE on empty cancels.',dim)
+        else:
+            self.mouse_button(35,138,170,'Type a number',action=self.start_number_typing)
+            d.text(220,142,'Got a number elsewhere? N types it in and sends a contact request.',dim)
+        rows = self.comms_contact_rows(view)
+        selectable = [i for i,row in enumerate(rows) if row['actions']]
+        if selectable: self.comms_select %= len(selectable)
+        chosen = selectable[self.comms_select] if selectable else None
+        fit = 11
+        start = max(0,min((chosen or 0)-fit+2,len(rows)-fit))
+        for line,i in enumerate(range(start,min(len(rows),start+fit))):
+            row,y = rows[i],185+line*36
+            if row.get('head'):
+                d.text(45,y+4,row['text'],GOLD); continue
+            if not row['actions']:
+                d.text(60,y+4,row['text'],dim); continue
+            d.text(45,y+4,('> ' if i == chosen else '  ')+row['text'][:52],GOLD if i == chosen else GREEN)
+            x = 650
+            for label,action in row['actions']:
+                w = len(label)*11+16
+                self.mouse_button(x,y,w,label,action=lambda a=action,s=selectable.index(i):(setattr(self,'comms_select',s),a()))
+                x += w+8
+
+    def draw_comms_distress(self, view):
+        d,dim,ship = self.d,(135,175,185),self.disabled_ship
+        y = 145
+        if 'dsc' not in self.p.equipment:
+            d.text(45,y,'No DSC comms console fitted. Outfitting sells one at tech 3+ stations.',GOLD)
+        elif not ship or 'ident' not in ship:
+            d.text(45,y,'No DSC distress alerts received. The console listens while you fly.',GREEN)
+        else:
+            reach,bearing = self.distress_bearing(ship['object'])
+            ago = max(0,time.time()-ship['sent'])
+            left = max(0,ship['lost_at']-time.time())
+            rows = [('Identity',ship['ident']),('Nature of distress',ship['nature'].upper()),
+                    ('Position',f'{reach/1000:.2f} km, bearing {bearing:03d} (clockwise from your nose)'),
+                    ('First alert',f'{ago/60:.0f} min ago'),('Crew estimate',f'about {math.ceil(left/60)} min of survival left' if left else 'critical'),
+                    ('Status','ACKNOWLEDGED by you' if ship['acknowledged'] else 'UNACKNOWLEDGED: repeating every minute')]
+            d.text(35,y,'>',GOLD)
+            for i,(label,value) in enumerate(rows):
+                d.text(55,y+i*30,f'{label:<20}',dim); d.text(330,y+i*30,value,RED if label == 'Nature of distress' else GREEN)
+            y += len(rows)*30
+            if not ship['acknowledged']: self.mouse_button(45,y,190,'Acknowledge',action=self.acknowledge_selected_call)
+            d.text(250,y+4,'ENTER acknowledges and tracks the vessel. Fly there, then N hails it.',GOLD)
+            y += 40
+        d.text(45,y+10,'CALLS ON THE AIR (distress and urgency)',GOLD)
+        calls = self.comms_calls(view)
+        if not calls: d.text(45,y+40,'None heard.',dim)
+        rows = []
+        for message in calls[:8]: rows += [(row,RED) for row in self.comms_rows(message,COMMS_PAGE_WRAP)]
+        for i,(row,color) in enumerate(rows[:max(0,(575-(y+40))//22)]): d.text(45,y+40+i*22,row,color)
+
+    def draw_comms_strip(self, items, right):
+        """Direct, distress and urgency messages from the last few seconds, newest first, on one line."""
+        x = 28
+        for message in reversed(items):
+            sender = message.get('sender_name') if type(message.get('sender_name')) is str else ''
+            text = message.get('text') if type(message.get('text')) is str else ''
+            line = ''.join(c if c.isprintable() else ' ' for c in f'{sender or "?"}: {text}')[:60]
+            room = (right-x)//TICKER_CHAR
+            if room < 12: break
+            line = line[:room]
+            self.d.text(x,STRIP_Y,line,self.comms_color(message))
+            x += (len(line)+3)*TICKER_CHAR
 
     def toggle_feedback(self):
         """Ctrl+0: the bug and suggestion screen from anywhere (again goes back)."""
@@ -3708,10 +4266,6 @@ class Game:
             pages = max(1,math.ceil(len(self.p.trade_log)/14))
             if k == UP: self.trades_page = min(pages-1,self.trades_page+1)
             elif k == DOWN: self.trades_page = max(0,self.trades_page-1)
-            return
-        if self.mode == 'dsc':
-            if k == 13: self.acknowledge_distress()
-            elif k == 9: self.mode = 'flight'
             return
         if self.mode == 'hail':
             if k in (ord('1'),ord('2'),ord('3')): self.hail_ask(HAIL_ASKS[k-ord('1')])
@@ -4029,9 +4583,6 @@ class Game:
             self.rear_view = not self.rear_view
             self.laser_flash = 0
             self.message = (f'REAR VIEW - rear {self.p.rear_laser} laser ready. V changes it.' if 'rear' in self.p.equipment else 'REAR VIEW - no rear laser mount fitted. Buy one in outfitting.') if self.rear_view else 'FORWARD VIEW.'
-            return
-        if k == 9:
-            self.open_dsc()
             return
         if k == ord('5'):
             targets = ([self.enemy] if self.enemy is not None else [])+([self.disabled_ship['object']] if self.disabled_ship else [])+[t['object'] for t in self.traffic]+[p['object'] for p in self.other_players.values()]
@@ -4435,7 +4986,7 @@ class Game:
         contacts += [('trader',t['object'],'TRADER '+t['name'].upper(),(205,205,215)) for t in self.traffic]
         for rock in self.asteroids: contacts.append(('object',rock,{8:'GOLD ROCK',9:'SILVER ROCK'}.get(rock[4] if len(rock) > 4 else 2,'ASTEROID'),GOLD))
         for ore in self.fragments: contacts.append(('object',ore,self.fragment_label(ore),(150,190,255)))
-        contacts += [('player',p['object'],'PLAYER '+p['name'],(140,185,255)) for p in self.other_players.values()]
+        contacts += [('player',p['object'],'PLAYER '+self.player_tag(p['name']),(140,185,255)) for p in self.other_players.values()]
         contacts.append(('object',self.sun,'SUN',GOLD))
         return contacts
 
@@ -4479,6 +5030,12 @@ class Game:
             self.story_click(x,y)
             return
         if self.inbox_blocks_input(): return
+        px,py,pw,ph = COMMS_PANEL
+        if self.comms_shown() and px <= x < px+pw and py <= y < py+ph:
+            for bx,by,w,h,action in self.panel_buttons:
+                if bx <= x < bx+w and by <= y < by+h: return action()
+            if y >= py+ph-60: self.start_comms_typing()   # the type line
+            return   # the panel covers what is under it
         for bx,by,w,h,action in reversed(self.buttons):
             if bx <= x <= bx+w and by <= y <= by+h:
                 action()
@@ -4757,7 +5314,9 @@ class Game:
     def _update_simulation(self, dt):
         if self.mode == 'departure':
             self.departure_remaining = max(0,self.departure_remaining-dt)
-            if self.departure_remaining == 0: self.message = 'Departure clearance granted. L launches; Cancel stays docked.'
+            if self.departure_remaining == 0:
+                self.message = 'Departure clearance granted. L launches; Cancel stays docked.'
+                self.radio('STATION CONTROL',text='Departure clearance granted.')
             return
         if self.mode in ('flight','cruise'): self.rescue_cooldown = max(0,self.rescue_cooldown-dt)
         if self.arrival:
@@ -4784,11 +5343,12 @@ class Game:
             if self.docking_pending == 0:
                 if self.arrest_pending():
                     self.dock_clearance = 120
-                    self.message = 'STATION CONTROL: clearance to surrender. You will be ARRESTED on docking.'
+                    self.message = 'STATION CONTROL: clearance to surrender. You will be ARRESTED on docking.'; self.radio('STATION CONTROL','safety')
                 elif self.station_allows():
                     self.dock_clearance = 120
                     self.message = 'Docking clearance granted for 120 seconds.'
-                else: self.message = 'Docking clearance refused: wanted status.'
+                    self.radio('STATION CONTROL')
+                else: self.message = 'Docking clearance refused: wanted status.'; self.radio('STATION CONTROL','safety')
         if self.breakdown_in is not None:
             self.breakdown_in -= dt
             if self.breakdown_in <= 0:
@@ -4938,6 +5498,7 @@ class Game:
                 self.enemy = [random.uniform(-120,120),random.uniform(-70,70),-850. if random.random()<.3 else 850.,6,0.]
                 self.pirate_tailing,self.pirate_passing = 0.,False
                 self.message = 'Hostile contact! SPACE lasers; M missile. On your tail? Brake hard to make it overshoot.'
+                self.radio('UNKNOWN SHIP','routine',random.choice(PIRATE_TAUNTS))
                 self.checkpoint()
         if self.enemy:
             e = self.enemy
@@ -5351,6 +5912,7 @@ class Game:
         lawful = not self.p.deep_space and PROFILES[self.p.system][0] not in ('Anarchy','Feudal')
         if obj[3] > 0:
             self.message = f'RADIO, trader {trader["name"]}: "Hold your fire! We are an unarmed freighter."'+(' Lawful space: destroying it means a 100 cr fine.' if lawful else '')
+            self.radio('TRADER '+trader['name'].upper(),'urgency','Hold your fire! We are an unarmed freighter.')
             return
         self.explode(obj)
         self.remove_trader(trader)
@@ -5483,7 +6045,7 @@ class Game:
         self.buttons.append((x,y,w,h,action))
 
     def draw_mouse_ui(self):
-        self.buttons = []
+        self.buttons = list(getattr(self,'comms_page_buttons',[])) if self.mode == 'comms' else []
         self.footer_actions = []
         d = self.d
         if self.mode not in ('feedback','notes','redeem','rename','menu','prison','intro'):
@@ -5494,6 +6056,13 @@ class Game:
                 d.rect(x,18,w,32,GOLD)
             for i,(n,label,lit) in enumerate(RAIL):
                 y = 80+i*44
+                if n == 5:
+                    unread = self.comms.unread()
+                    # The rail button holds 9-10 characters: '5 Comms 3', '5 Comms 9+'.
+                    count = '' if not unread else f' {unread}' if unread < 10 else ' 9+'
+                    self.mouse_button(PANEL_W-8,y,100,label+count,action=lambda:self.open_screen(5))
+                    if self.mode in lit or self.comms_shown(): d.rect(PANEL_W-8,y,100,32,GOLD)
+                    continue
                 self.mouse_button(PANEL_W-8,y,100,label,action=lambda n=n:self.open_screen(n))
                 if self.mode in lit: d.rect(PANEL_W-8,y,100,32,GOLD)
         modal = self.mode not in ('market','flight','cruise','hyperspace','dead','prison')
@@ -5687,8 +6256,8 @@ class Game:
             returns = {'map':'map_return','help':'help_return','updates':'update_return',
                        'menu':'menu_return','notes':'notes_return','rename':'rename_return','intro':'intro_return','feedback':'feedback_return',
                        'money':'money_return','vms':'vms_return','outfit':'outfit_return',
-                       'engineering':'engineering_return','cargo':'cargo_return','launch_warning':'launch_return'}
-            fixed = {'planet_profile':'map','redeem':'money','bank':'money','jobs':'money','trades':'money','reports':'money','hail':'flight','dsc':'flight',
+                       'engineering':'engineering_return','cargo':'cargo_return','launch_warning':'launch_return','comms':'comms_return'}
+            fixed = {'planet_profile':'map','redeem':'money','bank':'money','jobs':'money','trades':'money','reports':'money','hail':'flight',
                      'exchange':'money','trade_deal':'market','departure':'market'}
             if self.mode in returns: self.mode = getattr(self,returns[self.mode],'market')
             elif self.mode in fixed: self.mode = fixed[self.mode]
@@ -5742,7 +6311,7 @@ class Game:
                 ('Manual docking','LEFT / RIGHT + LOW SPEED','Enter the rotating slot at 1–25. Centre within 14m / 6m; roll within +/-14 degrees.'),
                 ('Automatic docking','D','A fitted docking computer requests clearance and guides the approach.'),
                 ('Emergency rescue','CTRL+E','Review rescue terms. Nearby stations claim 25%; distant salvagers negotiate.'),
-                ('DSC console','5','With a DSC comms console: distress alerts (identity, nature, position). ENTER acknowledges and tracks.'),
+                ('Communicator','5 / CTRL+5','5 toggles the panel; ENTER types; P sets message priority. Ctrl+5: full page, Distress tab.'),
                 ('Field engineering','8','Repair your ship or a nearby selected disabled ship. Training improves odds.'),
                 ('Repair cooldown','30m, 60m, 120m…','Failed repairs impose real-time waits. Rescue is still available during a cooldown.')]),
             ('Station',[
@@ -5778,6 +6347,8 @@ class Game:
         d.text(640,5,location+economy,GOLD)
         d.text(640,29,f'CR {p.credits:.0f}  CYM {p.crymto}  KILLS {p.kills}')
         d.line(25,52,PANEL_W-25,52)
+        # One locked snapshot of the comms log a frame, for the page, the panel and the strip.
+        view = self.comms.view() if self.mode in COMMS_PANEL_MODES or self.mode == 'comms' else None
         if self.mode == 'vms':
             self.draw_vms()
         elif self.mode == 'menu':
@@ -5835,8 +6406,8 @@ class Game:
             self.draw_distress()
         elif self.mode == 'hail':
             self.draw_hail()
-        elif self.mode == 'dsc':
-            self.draw_dsc()
+        elif self.mode == 'comms':
+            self.draw_comms_page(view)
         elif self.mode == 'hyperspace':
             self.draw_hyperspace()
         elif self.mode == 'help':
@@ -5904,8 +6475,8 @@ class Game:
                 d.text(35,520,'B or ENTER buys; S sells for half price.')
                 d.text(35,545,'The pulse laser is built in and cannot be sold.',(135,175,185))
             wanted = self.wanted_level()
-            for i,t in enumerate(['COMMANDER STATUS',f'Cmdr  {self.commander_name()[:16]}',f'Rank  {p.rank}',f'Wanted {"*"*wanted}{"-"*(5-wanted)} {wanted}/5',f'Cargo {sum(p.cargo)}/{p.capacity} t',f'Fuel  {p.fuel:.2f}/7',f'Hull  {p.hull:.0f}%',f'Refill {p.fuel_cost()} cr',f'Service {p.service_cost()} cr',f'Mines {p.mines}/4',f'Fine {p.fine} cr',f'Wear {p.maintenance:.0f}%',f'Eng. {p.engineering_level}/5']): d.text(790,130+i*35,t,RED if i == 3 and wanted else GREEN)
-            if p.edited: d.text(790,130+13*35,'This save was edited',RED); d.text(790,130+14*35,'outside the game.',RED)
+            for i,t in enumerate([] if self.comms_shown() else ['COMMANDER STATUS',f'Cmdr  {self.commander_name()[:16]}',f'Rank  {p.rank}',f'Wanted {"*"*wanted}{"-"*(5-wanted)} {wanted}/5',f'Cargo {sum(p.cargo)}/{p.capacity} t',f'Fuel  {p.fuel:.2f}/7',f'Hull  {p.hull:.0f}%',f'Refill {p.fuel_cost()} cr',f'Service {p.service_cost()} cr',f'Mines {p.mines}/4',f'Fine {p.fine} cr',f'Wear {p.maintenance:.0f}%',f'Eng. {p.engineering_level}/5']): d.text(790,130+i*35,t,RED if i == 3 and wanted else GREEN)
+            if p.edited and not self.comms_shown(): d.text(790,130+13*35,'This save was edited',RED); d.text(790,130+14*35,'outside the game.',RED)
             if self.mode == 'market' and p.charter: d.text(35,562,f'NEWCOMER CHARTER: +50% on sale profit here (max {CHARTER_CAP}/t) to Operator.',(120,220,140))
             elif self.mode == 'market': d.text(35,562,'Ship fuel, service, fitting and engineering: open VMS above.')
             d.text(35,590,'3 Money / station jobs   2 VMS   1 Nav')
@@ -5938,7 +6509,11 @@ class Game:
         self.draw_story()
         d.line(25,710,PANEL_W-25,710)
         notice = 'Update '+self.updates.latest+' available - 2' if self.updates.latest else self.message
-        d.text(28,725,notice[:94],GOLD)
+        shown = self.comms_shown()
+        strip = view['strip'] if view and self.mode in COMMS_PANEL_MODES else []
+        d.text(28,714 if strip else 725,notice[:69 if shown else 94],GOLD)
+        if strip: self.draw_comms_strip(strip,COMMS_PANEL[0]-10 if shown else W)
+        if shown: self.draw_comms_panel(view)
         d.present(d.r)
 
     def draw_flight(self):
@@ -6268,7 +6843,7 @@ def main():
             game.remote_save = remote
             from presence import PresenceClient
             from save_sync import FeedbackUploader
-            presence = PresenceClient(remote)
+            presence = PresenceClient(remote,game.comms)
             feedback = FeedbackUploader(remote,FEEDBACK_OUTBOX)
             feedback.start()
             game.presence = presence

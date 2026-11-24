@@ -75,8 +75,10 @@ class SharedPresence:
 
 
 class PresenceClient:
-    def __init__(self, remote):
+    def __init__(self, remote, comms=None):
+        from comms import CommsLog
         self.remote = remote
+        self.comms = comms if comms is not None else CommsLog()
         self.session = uuid.uuid4().hex
         self.sequence = 0
         self.snapshot = dict(players=[],you=None)
@@ -101,11 +103,12 @@ class PresenceClient:
                 if self.stopping: return
                 state,self.pending = self.pending,None
             self.sequence += 1
-            state = dict(state,session=self.session,sequence=self.sequence)
+            state = dict(state,session=self.session,sequence=self.sequence,comms=self.comms.payload())
             try:
                 result = self.remote.request(state,endpoint='/v1/presence')
                 if result.get('protocol') != 1 or type(result.get('players')) is not list or len(result['players']) > MAX_LISTED: raise ValueError('Invalid presence response')
                 self.snapshot = result
+                self.comms.receive(result.get('comms'))
                 self.status = f'Universe: {len(result["players"])} players connected'
             except (OSError,RuntimeError,ValueError,KeyError):
                 self.snapshot = dict(players=[],you=None)
