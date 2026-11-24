@@ -18,7 +18,7 @@ def install_mac_app(target):
         '<plist version="1.0"><dict>\n'
         '<key>CFBundleName</key><string>Riftdogs</string>\n'
         '<key>CFBundleIdentifier</key><string>io.github.womb4t.riftdogs</string>\n'
-        '<key>CFBundleExecutable</key><string>riftdogs</string>\n'
+        '<key>CFBundleExecutable</key><string>riftdogs-launcher</string>\n'
         '<key>CFBundlePackageType</key><string>APPL</string>\n'
         '<key>CFBundleIconFile</key><string>Riftdogs</string>\n'
         '<key>NSHighResolutionCapable</key><true/>\n'
@@ -28,6 +28,10 @@ def install_mac_app(target):
     game = quote(target/'riftdogs.py')
     private = app/'Resources'/'python'/'bin'/'python3'
     interpreter = app/'MacOS'/'Riftdogs'
+    # Up to 0.11.0 the launcher was MacOS/riftdogs. On macOS's default APFS, which ignores capitals,
+    # that is the same file as the Python copy, so the launcher overwrote it and exec'd itself forever.
+    # Remove it before copying (on such a disk this removes the copy too, which is rewritten next).
+    (app/'MacOS'/'riftdogs').unlink(missing_ok=True)
     if private.exists():
         # The Dock names an app after the bundle holding the running binary, so run a copy of the
         # app's private (statically linked) Python from Contents/MacOS, pointed at its own library.
@@ -42,7 +46,8 @@ def install_mac_app(target):
     else:
         interpreter.unlink(missing_ok=True)
         script = f'#!/bin/sh\nexec {quote(sys.executable)} {game} "$@"\n'
-    launcher = app/'MacOS'/'riftdogs'
+    # Its name must differ from 'Riftdogs' by more than capitals (see above).
+    launcher = app/'MacOS'/'riftdogs-launcher'
     launcher.write_text(script, encoding='utf-8')
     launcher.chmod(0o755)
     icon = Path(__file__).resolve().parent/'assets'/'Riftdogs.icns'

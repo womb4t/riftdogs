@@ -98,8 +98,10 @@ RIFTDOGS_APP="$app" "$python" "$source_dir/install.py"
 
 # The Dock names an app after the bundle holding the running binary, so the launcher runs a copy of
 # the private Python from Contents/MacOS. Make sure it really starts; otherwise run Python directly.
+# A copy that is a script (the 0.11.0 launcher clash on disks that ignore capitals) is never run.
 interpreter="$contents/MacOS/Riftdogs"
-if ! PYTHONHOME="$python_home" "$interpreter" -c 'import ctypes, json, ssl, sqlite3' >/dev/null 2>&1; then
+if [[ "$(head -c 2 "$interpreter" 2>/dev/null)" == '#!' ]] ||
+   ! PYTHONHOME="$python_home" "$interpreter" -c 'import ctypes, json, ssl, sqlite3' >/dev/null 2>&1; then
   rm -f "$interpreter"
   echo 'Note: using the private Python directly, so the Dock may show Python instead of Riftdogs.'
 fi

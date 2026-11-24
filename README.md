@@ -2,7 +2,7 @@
 
 A living galaxy you trade in.
 
-An original Elite-inspired Python space game for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.11.0**.
+An original Elite-inspired Python space game for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.11.1**.
 
 Play offline, or play online in a shared living galaxy: other commanders' ships on your scanner, a shared market, the Relay's news ticker and payment codes. Online play uses the official Riftdogs server, which saves your progress. Offline play needs nothing. Shared combat is a future project. The phased development plan is in [ROADMAP.md](ROADMAP.md).
 

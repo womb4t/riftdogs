@@ -28,7 +28,7 @@ import payments
 import seal
 import secrets
 
-VERSION = '0.11.0'
+VERSION = '0.11.1'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6

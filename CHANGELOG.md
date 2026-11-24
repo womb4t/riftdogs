@@ -1,3 +1,7 @@
+# 0.11.1 — Mac launch fix
+
+- **Mac: the app opens again.** On Macs whose disk ignores capitals in file names (the default), the 0.11.0 installer wrote the launcher over the game's own copy of Python, so the app started itself in a loop and never opened. The launcher now has its own name. If Riftdogs 0.11.0 won't open on your Mac, install again from the release; your saved game is kept.
+
 # 0.11.0 — the communicator
 
 Every ship now has a number, and you can talk to other pilots.
