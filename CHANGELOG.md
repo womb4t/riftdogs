@@ -1,3 +1,9 @@
+# 0.14.1 — playtest fixes
+
+- **Your speed is in the forward view**, bottom left, where you're looking. It turns red and shows the limit (SPEED 40 / 25) when you're cleared to dock but going too fast.
+- **Herbert tells you about Y guidance** as you near the station: R for clearance, then Y lines you up on the port and leads you in while you work the throttle.
+- No stutter the first time you see a station: the stations' shapes are built when the game starts.
+
 # 0.14.0 — the new cockpit
 
 - **A new cockpit.** Target and ship panels, a radar with bearing and heat, gauges for speed, fuel, heat, shields and weapons, and a Controls button for mouse flight.

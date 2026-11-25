@@ -480,6 +480,12 @@ def inside(kind, point, slack=0.0):
     return False
 
 
+def warm():
+    """Build every station type's faces now (50-85 ms each, cached for good), so the first sight of a station in
+    flight doesn't stall a frame."""
+    for kind in TYPES: surfaces(kind)
+
+
 @functools.lru_cache(maxsize=None)
 def _bound(kind):
     """The radius of a sphere round the station's middle that holds every vertex, with room to spare."""

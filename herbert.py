@@ -79,8 +79,8 @@ LINES = {
         "Gently, now. W, out past 5 km from the station. Then hold H for the jump.",
     ),
     'step_clearance': (
-        "There's the station. Slow down and ask nicely: R for docking clearance.",
-        "Close in and press R for clearance. Barge in uninvited and the police come out.",
+        "There's the station. Ask nicely: R for clearance. Then Y, and guidance lines you up on the port.",
+        "R for clearance, then Y: guidance leads you to the port. You still work the throttle.",
     ),
     'step_dock': (
         "Line up: within 14 m across, 6 m up or down, roll within 14 degrees, under 25. Small corrections.",

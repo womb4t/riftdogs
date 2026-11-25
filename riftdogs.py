@@ -32,7 +32,7 @@ import stations
 import cockpit
 import secrets
 
-VERSION = '0.14.0'
+VERSION = '0.14.1'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
@@ -7166,7 +7166,9 @@ class Game:
         of room."""
         p = self.p
         laser = ('REAR '+p.rear_laser.upper()+' LASER' if 'rear' in p.equipment else 'REAR UNARMED') if self.rear_view else p.laser.upper()+' LASER'
-        items = [(f'SPEED {self.speed:.0f}',GREEN,9),(f'FUEL {p.fuel:.2f}'+(' LOW' if p.fuel < 1 else ''),RED if p.fuel < 1 else GREEN,9),
+        # In flight the speed is in the canopy (draw_view), where the pilot is looking.
+        items = [] if self.mode == 'flight' else [(f'SPEED {self.speed:.0f}',GREEN,9)]
+        items += [(f'FUEL {p.fuel:.2f}'+(' LOW' if p.fuel < 1 else ''),RED if p.fuel < 1 else GREEN,9),
                  (laser,GREEN,9),(f'MISSILES {p.missiles}',GREEN,8),(f'MINES {p.mines}',GREEN,5)]
         if self.cloaked or self.jamming: items.append(('CLOAKED' if self.cloaked else 'JAMMING',GOLD,7))
         if self.mode == 'flight' and self.in_patrol_zone(): items.append(('PATROL ZONE',GOLD,4))
@@ -7314,6 +7316,7 @@ class Game:
         d.text(left+12,bottom-26,beacon[:room-len(slot)-2],GREEN)
         guidance = (('GUIDANCE Y LINING UP  ' if self.guidance_lining_up() else 'GUIDANCE Y  ') if self.course_assist else '')+('FINE ^F' if self.fine_control else '')
         if guidance.strip(): d.text(right-12-len(guidance.strip())*11,bottom-50,guidance.strip(),GOLD)
+        d.text(left+12,bottom-50,*self.canopy_speed())
         def centred(text, y, color):
             d.text(cx-len(text)*11//2,y,text,color)
         if shot: centred('INCOMING '+shot['kind'].upper()+' FIRE',bottom-80,shot_color)
@@ -7329,6 +7332,12 @@ class Game:
             d.rect(cx-305,card,610,82,GREEN)
             d.text(cx-280,card+15,('ARRIVED AT '+self.arrival['name'].upper())[:50],GOLD)
             d.text(cx-280,card+47,f'Galactic coordinates {p.position[0]:.2f}, {p.position[1]:.2f}',GREEN)
+
+    def canopy_speed(self):
+        """The canopy's speed row (text, colour): red while cleared to dock but over the docking limit."""
+        text = f'SPEED {self.speed:.0f}'
+        if self.dock_clearance and self.speed > DOCK_SPEED_LIMIT: return text+f' / {DOCK_SPEED_LIMIT}',RED
+        return text,GREEN
 
     def draw_canopy(self):
         """The canopy's frame: a dim border and four corner struts, inside the view."""
@@ -8122,6 +8131,7 @@ def main():
             return
         if display is None: display = Display()
         game = Game(display)
+        stations.warm()   # once, before play: the first station seen in flight would otherwise stall a frame
         game.checkin = client
         if remote:
             game.remote_save = remote

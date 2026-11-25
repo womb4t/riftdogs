@@ -126,6 +126,7 @@ Versions are targets, not promises. Each phase has a GitHub milestone with the s
 - Planet messages for named players, and local noticeboards for wanted and for-sale notices, with expiry and moderation.
 - A crowd-written galactic guide.
 - Fuel you can trade as cargo.
+- **SpaceNet** (parked 2026-11-25, not designed yet): one place in the game to go and look things up. It holds all the manuals and information about the game, and maybe more. Pilots search it for what they need on a mission. It could also carry the Relay's stories (Council decrees, the STA Tally, station news) with their history and what the terms mean, and the used-ship listings, noticeboards and galactic guide above. Today that news only scrolls past on the Relay ticker, and nothing in the game explains its terms.
 
 ## Phase 8 — 1.0 The frontier
 
