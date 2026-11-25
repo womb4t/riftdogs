@@ -105,8 +105,20 @@ def apply_invite(config, code):
     return name
 
 
-PRIVACY_LINK = (995,680,90,30)   # x, y, w, h of the start screen's Privacy and Terms links
-TERMS_LINK = (1095,680,80,30)
+PRIVACY_LINK = (995,688,90,30)   # x, y, w, h of the start screen's Privacy and Terms links
+TERMS_LINK = (1095,688,80,30)
+
+
+JOINED_ELSEWHERE = 'This email joined the galaxy from another computer. Use Connection settings to sign in there.'
+
+
+def queue_wait_message(state):
+    """Online play on the Riftdogs server before this install is let in, for the check-in state as the queue line
+    reads it (under the start screen's 94 characters)."""
+    if state['joined_elsewhere']: return JOINED_ELSEWHERE
+    if not state['registered']: return "Online: waiting to reach the Riftdogs server. Play offline till you're in."
+    where = f"You're number {state['place']} in the queue" if state['place'] else "You're joining the queue"
+    return f"{where}. Play offline till you're in. Invite? Connection settings."
 
 
 def open_document(name):
@@ -148,10 +160,25 @@ def fetch_news(server, timeout=3):
     except (OSError, ValueError): return None
 
 
+GOLD_PREFIXES = ("You're number","You're joining",'Welcome','Invite accepted','Signing up','Installing','Opened','Accepting','Removing','Joining','Your email is removed','Deleting','Deleted')
+WELCOME_PRIVACY_X = 70+len('[ ] I agree to the privacy notice (required)')*11+20
+UNREAD_BOX = (40,478,1020,114)
+
+
+def _ck():
+    import checkin   # imported late: checkin itself imports this module
+    return checkin
+
+
 class StartScreen:
     deleting = None   # 'Delete my account' open: the commander name typed so far
     save_root = None  # the game's data folder (holds servers/<slot>); None: riftdogs.SAVE's folder
-    def __init__(self, display, config, error='', update=None):
+    welcome = None    # the email screen's form (email, news, privacy, account) while it is open
+    checkin = None    # the CheckinClient, or None
+    joining = False   # the signup form is the Join the galaxy name form
+    skipped_update = None   # the release the player answered Not now to: U asks again
+    _state = None     # last read check-in state when there is no client
+    def __init__(self, display, config, error='', update=None, checkin=None):
         self.d,self.config,self.error = display,dict(config),error
         # A newer release must be answered before anything else: Enter installs, N or Esc plays this version until next launch.
         self.update,self.installing = update,False
@@ -176,6 +203,153 @@ class StartScreen:
                 self.texture = display.texture(display.r,surface)
                 display.free(surface)
         except (OSError,ValueError,EOFError): pass
+        self.start_checkin(checkin)
+
+    # --- check-in
+    def start_checkin(self, client):
+        self.checkin = client
+        self._state = _ck().load_state(self.folder())
+        self.welcome = None
+        if _ck().needs_email(self._state): self.open_welcome()
+
+    def folder(self):
+        return self.checkin.folder if self.checkin else None
+
+    def state(self):
+        if self.checkin: return self.checkin.snapshot()
+        return self._state or _ck().default_state()
+
+    def edit_state(self, change):
+        if self.checkin: return self.checkin.edit(change)
+        state = _ck().load_state()
+        change(state)
+        _ck().save_state(state)
+        self._state = state
+
+    def has_token(self, saved=False):
+        """Is there a login file? `saved`: the one in the saved settings, not unsaved edits in the fields."""
+        return Path((load_connection() if saved else self.config)['token_file']).expanduser().is_file()
+
+    def open_welcome(self):
+        self.welcome = dict(email='',news=False,privacy=False,account=bool(_ck().find_account(DEFAULT_SERVER)))
+        self.field,self.replace_field,self.auto_at = 0,False,None
+
+    def reopen_welcome(self):
+        """The server refused the email while the player was on this screen: ask again."""
+        if self.welcome is None and not (self.settings or self.signup or self.deleting is not None) and _ck().needs_email(self.state()):
+            self.open_welcome()
+
+    def welcome_event(self, kind, value):
+        w = self.welcome
+        if kind == 'click':
+            x,y = value
+            if not 70 <= x <= 1030: return
+            if 320 <= y <= 364: self.field,self.replace_field = 0,False
+            elif 405 <= y <= 440: self.field = 1; w['news'] = not w['news']
+            elif 445 <= y <= 480:
+                if WELCOME_PRIVACY_X <= x <= WELCOME_PRIVACY_X+len('Privacy')*11: self.error = open_document('PRIVACY.md')
+                else: self.field = 2; w['privacy'] = not w['privacy']
+        elif kind == 'down' and value == 9: self.field,self.replace_field = (self.field+1)%3,False
+        elif kind == 'down' and value == 13: self.submit_welcome()
+        elif self.field and ((kind == 'down' and value == 32) or (kind == 'text' and value == ' ')):
+            key = ('news','privacy')[self.field-1]
+            w[key] = not w[key]
+        elif self.field == 0: self.form_event(kind,value,w,('email',),(254,))
+
+    def submit_welcome(self):
+        ck,w = _ck(),self.welcome
+        try: ck.set_email(ck.default_state(),w['email'],w['news'],account=w['account'])   # only checks the address
+        except ValueError as error: self.error = str(error); return
+        if not w['privacy']: self.error = 'Tick the box to agree to the privacy notice.'; return
+        try:
+            if self.checkin: self.checkin.set_email(w['email'],w['news'],account=w['account'])
+            else:
+                state = ck.load_state()
+                ck.set_email(state,w['email'],w['news'],account=w['account'])
+                ck.save_state(state)
+                self._state = state
+        except OSError: self.error = 'Could not save your email on this computer. Check folder permissions.'; return
+        self.welcome,self.error,self.field = None,'',0
+        if self.checkin: self.checkin.revive()
+
+    def unread(self):
+        return [n for n in self.state()['notices'] if not n['read']]
+
+    def mark_read(self):
+        unread = self.unread()
+        if not unread: return
+        newest = unread[-1]['id']
+        self.edit_state(lambda state: [n.update(read=True) for n in state['notices'] if n['id'] == newest])
+
+    def on_riftdogs(self):
+        """Is the chosen server the Riftdogs one? Only then do the queue, Join the galaxy and Riftdogs' minimum
+        version apply: a friend's server is neither blocked nor hidden by them."""
+        return self.config['server'].strip().rstrip('/') == DEFAULT_SERVER
+
+    def can_join(self):
+        return bool(self.state()['claim']) and self.on_riftdogs() and not self.has_token()
+
+    def queue_line(self):
+        """(text, colour or None) for the line above the buttons, or None. A required update comes first."""
+        from riftdogs import GOLD
+        state,riftdogs = self.state(),self.on_riftdogs()
+        how = ' Press U to update.' if self.skipped_update else ''
+        if riftdogs and state['must_update']:
+            return f"Riftdogs {state['must_update']} or newer is needed for online play.{how or ' Offline play still works.'}",GOLD
+        if riftdogs and not self.has_token():
+            if state['claim']: return "You're in! Choose Join the galaxy to pick your galaxy name.",GOLD
+            if state['joined_elsewhere']: return JOINED_ELSEWHERE,None
+            if state['place']: return f"Online: you're number {state['place']} in the queue.",None
+            if not state['registered']: return 'Online: waiting to reach the Riftdogs server.',None
+        if state['recommended']: return f"Update {state['recommended']} is recommended.{how}",GOLD
+        return None
+
+    def must_update_error(self):
+        """Show the forced-update message and return True when online play on the Riftdogs server is not allowed."""
+        version = self.state()['must_update']
+        if not version or not self.on_riftdogs(): return False
+        self.error = (f'Riftdogs {version} or newer is needed online. Press U to update; Offline play still works.' if self.skipped_update else
+                      f'Riftdogs {version} or newer is needed for online play. Update to play online; Offline play still works.')
+        return True
+
+    def open_join(self):
+        self.signup,self.joining = dict(name=''),True
+        self.settings,self.field,self.replace_field,self.error = False,0,False,''
+
+    def submit_join(self):
+        ck = _ck()
+        name,claim = self.signup['name'].strip(),self.state()['claim']
+        if not name: self.error = 'Choose a galaxy name: letters, numbers, _ or -.'; return
+        if not claim: self.error = 'Your place is not ready yet. Try again after the next check-in.'; return
+        folder = config_path().parent
+        try:   # the claim works once, so check the login can be saved before using it up
+            folder.mkdir(parents=True,exist_ok=True)
+            if not os.access(folder,os.W_OK): raise OSError('Config folder is not writable')
+        except OSError: self.error = 'Could not save your login. Check folder permissions.'; return
+        self.error = 'Joining the galaxy...'
+        self.draw()
+        try: player,token = ck.join_galaxy(claim,name)
+        except (ValueError,OSError) as error: self.error = str(error); return
+        try: store_account(self.config,DEFAULT_SERVER,player,token)
+        except OSError: self.error = 'Joined, but your login could not be saved. Check folder permissions.'; return
+        self.edit_state(lambda state: state.update(claim=None))
+        self.signup,self.joining = None,False
+        self.error = f'Welcome aboard, {player}! Choose Online play.'
+
+    def forget_computer(self):
+        before,self.error = self.error,'Forgetting this computer...'
+        self.draw()
+        if self.checkin: confirmed = self.checkin.forget()
+        else: _ck().forget_local(); confirmed = True
+        self._state = _ck().load_state(self.folder())
+        self.settings = False
+        self.open_welcome()
+        self.error = before
+        if not confirmed: self.error = 'Could not reach the server to forget this computer there; it is forgotten here.'
+
+    def forget_or_remove(self):
+        if self.has_token(saved=True) and not self.remove_email(): return
+        self.forget_computer()
 
     def close(self):
         if self.texture:
@@ -184,11 +358,18 @@ class StartScreen:
 
     def activate(self, index):
         if index == 0:
+            if self.must_update_error(): return None
+            if self.can_join():
+                self.open_join()
+                return None
             if not self.config['server']:
                 self.settings = True
                 self.error = 'Enter your server address and private token file path.'
                 return None
             if not Path(self.config['token_file']).expanduser().is_file():
+                if self.on_riftdogs():   # new pilots come in through the queue here, never the friends' sign-up form
+                    self.error = queue_wait_message(self.state())
+                    return None
                 self.open_signup('New pilot? Copy your invite code and click Paste invite, or sign up on the host\'s Wi-Fi.')
                 return None
             return 'online'
@@ -198,7 +379,7 @@ class StartScreen:
         return None
 
     def open_signup(self, message=''):
-        self.signup = dict(name='',email='')
+        self.signup = dict(name='',email=self.state()['email'] or '')   # the address from the email screen, not typed twice
         self.settings = False
         self.field,self.replace_field = 0,False
         self.error = message
@@ -245,11 +426,14 @@ class StartScreen:
             if (kind == 'down' and value in (13,ord('u'),ord('y'))) or (kind == 'click' and 110 <= value[0] <= 530 and 655 <= value[1] <= 699): return 'update'
             if (kind == 'down' and value in (27,ord('n'))) or (kind == 'click' and 570 <= value[0] <= 990 and 655 <= value[1] <= 699):
                 from riftdogs import VERSION
-                self.update = None
+                self.skipped_update,self.update = self.update,None
                 self.error = f'Update skipped for now: playing v{VERSION}. You will be asked again next launch.'
             return None
         if kind == 'down' and value == 27: return 'quit'
         if kind in ('down','click','text'): self.auto_at = None
+        if self.welcome is not None:
+            self.welcome_event(kind,value)   # the main buttons wait until the email is answered
+            return None
         if kind == 'click' and not self.settings and self.deleting is None:
             for rect,name in ((PRIVACY_LINK,'PRIVACY.md'),(TERMS_LINK,'TERMS.md')):
                 if rect[0] <= value[0] <= rect[0]+rect[2] and rect[1] <= value[1] <= rect[1]+rect[3]:
@@ -265,6 +449,14 @@ class StartScreen:
                 record = dict(name=self.deleting)
                 self.field = 0
                 if self.form_event(kind,value,record,('name',),(32,)): self.deleting = record['name']
+            return None
+        if self.joining:
+            if kind == 'click':
+                x,y = value
+                if 70 <= x <= 370 and 550 <= y <= 596: self.submit_join()
+                elif 730 <= x <= 1030 and 550 <= y <= 596: self.signup,self.joining = None,False; self.error = ''
+            elif kind == 'down' and value == 13: self.submit_join()
+            else: self.form_event(kind,value,self.signup,('name',),(32,))
             return None
         if self.signup is not None:
             if kind == 'click':
@@ -290,7 +482,7 @@ class StartScreen:
                 elif 70 <= x <= 370 and 550 <= y <= 596: self.save_settings()
                 elif 390 <= x <= 710 and 550 <= y <= 596: self.paste_invite()
                 elif 70 <= x <= 370 and 490 <= y <= 530: self.open_signup()
-                elif 390 <= x <= 710 and 490 <= y <= 530: self.remove_email()
+                elif 390 <= x <= 710 and 490 <= y <= 530: self.forget_or_remove()
                 elif 730 <= x <= 1030 and 490 <= y <= 530: self.deleting,self.replace_field = '',False; self.error = ''
                 elif 730 <= x <= 1030 and 550 <= y <= 596: self.settings = False; self.error = ''
             elif kind == 'down':
@@ -315,10 +507,14 @@ class StartScreen:
             elif value in (13,32): return self.activate(self.selected)
             elif value == ord('o'): return self.activate(0)
             elif value == ord('f'): return self.activate(1)
+            elif value == ord('m'): self.mark_read()
+            elif value == ord('u') and self.skipped_update: self.update = self.skipped_update   # the update question again
         elif kind == 'click':
             x,y = value
+            bx,by,bw,bh = UNREAD_BOX
+            if bx <= x <= bx+bw and by <= y <= by+bh and self.unread(): self.mark_read(); return None
             for index in range(3):
-                if 110+index*300 <= x <= 390+index*300 and 615 <= y <= 663:
+                if 110+index*300 <= x <= 390+index*300 and 631 <= y <= 679:
                     self.selected = index
                     return self.activate(index)
         return None
@@ -356,13 +552,14 @@ class StartScreen:
     def remove_email(self):
         from save_sync import remove_email
         account = self.account()
-        if account is None: return
+        if account is None: return False
         self.error = 'Removing your email...'
         self.draw()
         try: remove_email(*account,allow_lan=True)
-        except (RuntimeError,ValueError) as error: self.error = str(error); return
-        except OSError: self.error = 'Could not reach the server. Your email was not removed; try again later.'; return
+        except (RuntimeError,ValueError) as error: self.error = str(error); return False
+        except OSError: self.error = 'Could not reach the server. Your email was not removed; try again later.'; return False
         self.error = 'Your email is removed from the server. You will get no Riftdogs news.'
+        return True
 
     def submit_delete(self):
         from save_sync import delete_account
@@ -391,8 +588,16 @@ class StartScreen:
         self.config.update(token_file=str(config_path().with_name('player.token')),last_mode='',fallback_servers=[])
         try: save_connection(self.config)
         except OSError: pass
+        forgotten = True
+        if account[0] == DEFAULT_SERVER:   # a Riftdogs account's email is gone: this computer's install, which carries it, goes too
+            try:
+                if self.checkin: forgotten = self.checkin.forget()
+                else: _ck().forget_local()
+            except OSError: forgotten = False
+            self._state = _ck().load_state(self.folder())
         self.deleting = None
-        self.error = f'Deleted {name} and its save from the server; its login and save copy are removed from this computer.'
+        self.error = (f'Deleted {name} and its save from the server; its login and save copy are removed from this computer.' if forgotten else
+                      f'Deleted {name}; this computer could not be forgotten on Riftdogs yet.')
 
     def save_settings(self):
         self.config['server'] = self.config['server'].strip().rstrip('/')
@@ -428,6 +633,17 @@ class StartScreen:
             d.text(70,420,'Enter deletes. ESC closes the game; Back keeps your account.')
             d.rect(70,550,300,46,RED); d.text(85,562,'Delete account',RED)
             d.rect(730,550,300,46,GREEN); d.text(745,562,'Back',GREEN)
+        elif self.joining:
+            d.fill(40,90,1020,545,(5,15,25))
+            d.text(70,110,'CHOOSE YOUR GALAXY NAME',GOLD)
+            d.text(70,155,'Letters, numbers, _ or -. Other pilots see this name.')
+            d.rect(70,200,960,44,GOLD)
+            text = self.signup['name'][-81:]
+            if self.replace_field and text: d.fill(76,206,len(text)*11+8,32,(20,65,70))
+            d.text(80,210,text+('_' if int(time.monotonic()*2)%2 == 0 else ''),GOLD)
+            d.text(70,495,'Enter joins. ESC closes the game.')
+            d.rect(70,550,300,46,GREEN); d.text(85,562,'Join',GREEN)
+            d.rect(730,550,300,46,GREEN); d.text(745,562,'Back',GREEN)
         elif self.signup is not None:
             d.fill(40,90,1020,545,(5,15,25))
             d.text(70,110,'NEW PILOT SIGN-UP / '+self.config['server'],GOLD)
@@ -462,7 +678,7 @@ class StartScreen:
                 else: d.text(80,y+10,self.config[key][-82:] or '(click to enter)')
             for y,key,label in ((380,'allow_lan','Allow HTTP on a trusted home network'),(435,'import_local_save','Import offline pilot only if this server account is empty')):
                 d.text(70,y,('[X] ' if self.config[key] else '[ ] ')+label,GREEN)
-            for x,label in ((70,'New pilot? Sign up'),(390,'Remove my email'),(730,'Delete my account')):
+            for x,label in ((70,'New pilot? Sign up'),(390,'Remove my email' if self.has_token(saved=True) else 'Forget this computer'),(730,'Delete my account')):
                 d.rect(x,490,300 if x != 390 else 320,40,GREEN); d.text(x+15,500,label,GREEN)
             for x,w,label in ((70,300,'Save settings'),(390,320,'Paste invite'),(730,300,'Back')):
                 d.rect(x,550,w,46,GREEN); d.text(x+15,562,label,GREEN)
@@ -473,23 +689,60 @@ class StartScreen:
             d.text(110,630,'Your saved game and settings are kept.',GREEN)
             d.rect(110,655,420,44,GOLD); d.text(125,667,'Update now (Enter / U)',GOLD)
             d.rect(570,655,420,44,GREEN); d.text(585,667,'Not now (N / Esc)',GREEN)
+        elif self.welcome is not None:
+            self.draw_welcome()
         else:
-            if self.news_started:
+            unread = self.unread()
+            if unread:
+                import textwrap
+                d.fill(40,478,1020,114,(5,15,25))
+                d.text(55,486,f'FROM RIFTDOGS ({len(unread)} unread)',GOLD)
+                d.text(820,486,'M or click: mark read',GREEN)
+                for row,line in enumerate(textwrap.wrap(unread[-1]['text'],90,max_lines=3,placeholder='…')):
+                    d.text(55,512+row*24,line,GREEN)
+            elif self.news_started:
                 d.fill(40,478,1020,114,(5,15,25))
                 for row,line in enumerate(relay_lines(self.news if isinstance(self.news,dict) else None) if self.news else [RELAY_MASTHEAD]):
                     d.text(55,486+row*26,line,GOLD if row == 0 else GREEN)
-            for index,label in enumerate(('Online play','Offline play','Connection settings')):
+            queue = self.queue_line()
+            if queue:   # between the box (ends 592) and the buttons (start 631), lined up with the buttons
+                d.fill(40,596,1020,30,(5,15,25))
+                d.text(110,600,*(queue[0],) if queue[1] is None else queue)
+            join = self.can_join()
+            for index,label in enumerate(('Join the galaxy' if join else 'Online play','Offline play','Connection settings')):
                 x = 110+index*300
-                d.rect(x,615,280,48,GOLD if index == self.selected else GREEN)
-                d.text(x+15,630,label,GOLD if index == self.selected else GREEN)
+                d.rect(x,631,280,48,GOLD if index == self.selected else GREEN)
+                d.text(x+15,646,label,GOLD if index == self.selected else GREEN)
             if self.installing: pass
-            elif self.auto_at: d.text(110,685,f'Connecting to online play in {max(0,self.auto_at-time.monotonic()):.0f}s - press any key to choose',GOLD)
-            else: d.text(110,685,'Arrows choose / Enter opens / Click to play / ESC closes')
-        if not self.settings and self.deleting is None and not self.update:
+            elif self.auto_at: d.text(110,693,f'Connecting to online play in {max(0,self.auto_at-time.monotonic()):.0f}s - press any key to choose',GOLD)
+            else: d.text(110,693,'Arrows choose / Enter opens / Click to play / ESC closes')
+        if not self.settings and self.deleting is None and not self.update and self.welcome is None and not self.joining:
             for (x,y,w,h),label in ((PRIVACY_LINK,'Privacy'),(TERMS_LINK,'Terms')):
                 d.text(x+5,y+5,label,GREEN); d.fill(x+5,y+h-4,len(label)*11,1,GREEN)
-        if self.error: d.text(45,727,self.error[:94],GOLD if self.error.startswith(('Welcome','Invite accepted','Signing up','Installing','Opened','Accepting','Removing','Your email is removed','Deleting','Deleted')) else RED)
+        if self.error and self.welcome is None: d.text(45,727,self.error[:94],GOLD if self.error.startswith(GOLD_PREFIXES) else RED)
         d.present(d.r)
+
+    def draw_welcome(self):
+        import textwrap
+        from riftdogs import GOLD,GREEN,RED
+        d,w = self.d,self.welcome
+        d.fill(40,200,1020,490,(5,15,25))   # below the logo band of the splash art
+        d.text(70,215,'WELCOME, COMMANDER',GOLD)
+        prompt = 'Your email (required). We use it for your place in the online queue, replies to your bug reports and essential notices about the game.'
+        for row,line in enumerate(textwrap.wrap(prompt,86)): d.text(70,255+row*26,line)
+        d.rect(70,320,960,44,GOLD if self.field == 0 else GREEN)
+        text = w['email'][-81:]
+        if self.field == 0:
+            if self.replace_field and text: d.fill(76,326,len(text)*11+8,32,(20,65,70))
+            d.text(80,330,text+('_' if int(time.monotonic()*2)%2 == 0 else ''),GOLD)
+        else: d.text(80,330,text or '(click to enter)')
+        if w['account']: d.text(70,374,'Leave the email blank to use the one on your account.')
+        for y,key,field,label in ((410,'news',1,'Email me Riftdogs news too (optional)'),(455,'privacy',2,'I agree to the privacy notice (required)')):
+            d.text(70,y,('[X] ' if w[key] else '[ ] ')+label,GOLD if self.field == field else GREEN)
+        d.text(WELCOME_PRIVACY_X,455,'Privacy',GREEN); d.fill(WELCOME_PRIVACY_X,477,len('Privacy')*11,1,GREEN)
+        message = self.error or self.state()['register_error']
+        if message: d.text(70,510,message[:94],GOLD if message.startswith(GOLD_PREFIXES) else RED)
+        d.text(70,640,'Enter continues. ESC closes.')
 
     def install(self, run):
         """Run the update in the background while the window keeps drawing; False leaves the current version playable."""
@@ -521,6 +774,16 @@ class StartScreen:
             time.sleep(1/60)
         return 'skip'
 
+    def ask_email(self):
+        """Only the email screen (for --offline launches): 'ok' or 'quit'."""
+        while self.welcome is not None:
+            for kind,value in self.d.events():
+                if self.event(kind,value) == 'quit': return 'quit'
+                if self.welcome is None: return 'ok'
+            self.draw()
+            time.sleep(1/60)
+        return 'ok'
+
     def remember(self, mode):
         self.auto_at = None
         if self.config.get('last_mode') == mode: return
@@ -537,13 +800,16 @@ class StartScreen:
     def choose(self):
         self.fetch_relay()
         while True:
+            self.reopen_welcome()
             for kind,value in self.d.events():
                 choice = self.event(kind,value)
                 if choice:
                     if choice in ('online','offline'): self.remember(choice)
                     return choice
             if self.auto_at and time.monotonic() >= self.auto_at:
-                self.remember('online')
-                return 'online'
+                if self.must_update_error(): self.auto_at = None   # a forced update arrived: do not connect by itself
+                else:
+                    self.remember('online')
+                    return 'online'
             self.draw()
             time.sleep(1/60)

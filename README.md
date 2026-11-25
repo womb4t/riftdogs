@@ -2,9 +2,9 @@
 
 A living galaxy you trade in.
 
-An original Elite-inspired Python space game for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.11.1**.
+An original Elite-inspired Python space game for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.14.0**.
 
-Play offline, or play online in a shared living galaxy: other commanders' ships on your scanner, a shared market, the Relay's news ticker and payment codes. Online play uses the official Riftdogs server, which saves your progress. Offline play needs nothing. Shared combat is a future project. The phased development plan is in [ROADMAP.md](ROADMAP.md).
+Play offline, or play online in a shared living galaxy: other commanders' ships on your scanner, a shared market, the Relay's news ticker and payment codes. Online play uses the official Riftdogs server, which saves your progress. Offline play needs no account; every copy of the game checks in with its email and install ID (see [PRIVACY.md](PRIVACY.md)). Shared combat is a future project. The phased development plan is in [ROADMAP.md](ROADMAP.md).
 
 The game's trade rules come from the **Sovereign Trade Assembly (STA)**, the galaxy's parliament; its Galactic Council runs the economy within them.
 
@@ -89,6 +89,8 @@ You start docked with 400 credits, a full 7-unit fuel tank, a pulse laser, three
 | Scanner | Click a ship contact to select it; Tab cycles ship targets |
 | Comms panel (5) | Enter types a line, Enter sends, Tab changes channel, Backspace on an empty line stops typing (Esc still saves and closes) |
 | General | Backspace back; ` menu; Ctrl+N quick note; Ctrl+M full screen; Esc saves and closes |
+
+**New pilots:** an old hauler called Herbert appears on screen and offers to show brand-new commanders the ropes: say yes and he talks you through your first trip, in a panel while docked and a small card in flight. Say no and he leaves you to it. Call him with Ctrl+H or 5 (comms) for your first three trips; if you said no, he offers again when you call him docked. He works offline.
 
 ### Mouse controls
 
@@ -306,7 +308,7 @@ name, economy and technology level, with credits/kills below.
 
 FEEDBACK: press Ctrl+0 (or Menu 4, Report a bug), choose Bug report or Suggestion,
 then type a description and click Log report. Each report is saved as its own
-entry and sent to the developers the next time you play online. Only your text,
+entry and sent to the developers the next time this computer is online. Only your text,
 game version, platform, screen and system are included; no save file is attached.
 
 CRYMTO (CYM): contraband sales normally pay this separate account balance.
@@ -360,10 +362,14 @@ without the fee. Press - or click Notes for a saved personal
 notepad; typing appends text, Enter adds a line, arrows/Earlier/Later scroll,
 and Save notes or returning records changes. Notes survive ship loss.
 
-CONTROLS: the top bar offers Money, Nav, VMS, Menu and Back/Quit.
-Menu groups Controls, Notes, reporting, updates, fullscreen and exit. The grave/backtick key opens
-Menu; arrows and Enter select items, Back returns. Escape always saves and closes. The flight-only bottom-left
-Flight controls button opens Flight/Nav/Combat/Safety mouse controls. Buttons
+CONTROLS: the top bar on every screen carries the number keys: 1 Nav, 2 VMS, 3 Money, 4 Menu, 5 Comms,
+6 Logs, 7 Cargo, 8 Engineering, 9 Help (0 is Home). Quit is the first item in 4 Menu, which also groups Controls,
+Notes, reporting, updates and fullscreen. The grave/backtick key opens
+Menu; arrows and Enter select items, Back returns. Escape always saves and closes. In flight the middle screen
+has seven pages (Docking, Target, Comms, Nav, Cargo, Market, Combat): [ and ] turn them, and \ jumps to the
+one that is lit red because it needs you. Stations have a port at each end; dock at either one, within 30° of
+the port's axis. The flight-only
+Controls button under the ship outline opens Flight/Nav/Combat/Safety mouse controls. Buttons
 use consistent 32px targets, clear labels and context-specific actions.
 
 Open Money (3) then Station jobs (J) to earn credits. Jobs return to Money.

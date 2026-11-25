@@ -60,7 +60,7 @@ def install_mac_app(target):
 
 # Everything the installed game runs from. test_deploy checks every module the game imports is listed here.
 GAME_FILES = ('riftdogs.py', 'startup.py', 'presence.py', 'market.py', 'economy.py', 'council.py', 'tally.py',
-              'save_sync.py', 'seal.py', 'update.py', 'payments.py', 'comms.py', 'LICENSE', 'README.md', 'PRIVACY.md', 'TERMS.md')
+              'save_sync.py', 'seal.py', 'update.py', 'payments.py', 'comms.py', 'checkin.py', 'herbert.py', 'herbert_view.py', 'stations.py', 'cockpit.py', 'LICENSE', 'README.md', 'PRIVACY.md', 'TERMS.md')
 
 
 def recorded_source(source):
@@ -82,6 +82,9 @@ def install():
     splash = source/'assets/riftdogs-splash.bmp.gz'
     if splash.resolve() != (assets/splash.name).resolve():
         shutil.copy2(splash,assets/splash.name)
+    for portrait in sorted((source/'assets').glob('herbert-*.bmp.gz')):
+        if portrait.resolve() != (assets/portrait.name).resolve():
+            shutil.copy2(portrait,assets/portrait.name)
     icon = source/'assets/riftdogs-icon.png'
     if icon.resolve() != (assets/icon.name).resolve():
         shutil.copy2(icon,assets/icon.name)

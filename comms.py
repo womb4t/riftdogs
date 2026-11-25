@@ -353,6 +353,16 @@ class CommsLog:
     def unread(self):
         with self.lock: return sum(m['n'] > self._read and not m.get('old') for m in self.messages)
 
+    def needs_you(self, quiet_senders=(), always=()):
+        """An unread direct message, Mayday or Pan-Pan (not your own): the cockpit's Comms page lights for one.
+        Direct lines from quiet_senders don't count, unless their text is one of `always`."""
+        with self.lock:
+            return any(m['n'] > self._read and not m.get('old') and m.get('sender_name') != 'YOU'
+                       and (m['priority'] in ('distress', 'urgency')
+                            or (m['channel'] == 'direct'
+                                and (m.get('sender_name') not in quiet_senders or m.get('text') in always)))
+                       for m in self.messages)
+
     def mark_read(self):
         with self.lock: self._read = self._n
 

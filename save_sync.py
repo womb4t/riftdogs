@@ -2,6 +2,7 @@
 import hashlib
 import ipaddress
 import json
+import os
 import re
 from pathlib import Path
 import threading
@@ -71,8 +72,10 @@ def saved_at(save):
 def atomic(path, data):
     path.parent.mkdir(parents=True,exist_ok=True)
     temp = path.with_name(f'{path.name}.{threading.get_ident()}.tmp')  # per-thread, so the game and sync threads never share one
-    temp.write_bytes(data)
-    temp.chmod(0o600)
+    # Created 0600 from the start: no moment, whatever the umask, when another user could open a key or a save.
+    fd = os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|getattr(os,'O_BINARY',0),0o600)
+    with os.fdopen(fd,'wb') as out: out.write(data)
+    temp.chmod(0o600)   # a temp file left over from a crash keeps its old mode through os.open
     temp.replace(path)
 
 
@@ -557,49 +560,4 @@ class RemoteSave:
         with self.condition:
             self.stopping = True
             self.condition.notify()
-        if self.thread: self.thread.join(timeout=7)
-
-
-class FeedbackUploader:
-    """Sends logged bug reports and suggestions, oldest first, deleting each once the server has it."""
-    def __init__(self, remote, outbox, interval=30):
-        self.remote,self.outbox,self.interval = remote,Path(outbox),interval
-        self.stop = threading.Event()
-        self.thread = None
-        self.sent = 0
-
-    def start(self):
-        self.thread = threading.Thread(target=self.run,name='feedback',daemon=True)
-        self.thread.start()
-
-    def run(self):
-        while not self.stop.is_set():
-            self.send_all()
-            self.stop.wait(self.interval)
-
-    def send_all(self):
-        try: paths = sorted(self.outbox.glob('*.json'),key=lambda path:path.stat().st_mtime)
-        except OSError: return
-        for path in paths:
-            if self.stop.is_set(): return
-            try: entry = json.loads(path.read_text(encoding='utf-8'))
-            except (OSError,ValueError):
-                try: path.rename(path.with_suffix('.unreadable'))
-                except OSError: pass
-                continue
-            try: self.remote.request(entry,endpoint='/v1/feedback')
-            except RuntimeError as error:
-                if 'HTTP 400' in str(error):
-                    # The server rejected this entry outright; keep it aside rather than retrying forever.
-                    try: path.rename(path.with_suffix('.rejected'))
-                    except OSError: pass
-                    continue
-                return
-            except (OSError,ValueError): return
-            try: path.unlink()
-            except OSError: pass
-            self.sent += 1
-
-    def close(self):
-        self.stop.set()
         if self.thread: self.thread.join(timeout=7)

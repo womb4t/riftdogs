@@ -1,3 +1,30 @@
+# 0.14.0 — the new cockpit
+
+- **A new cockpit.** Target and ship panels, a radar with bearing and heat, gauges for speed, fuel, heat, shields and weapons, and a Controls button for mouse flight.
+- **A middle screen with seven pages**: Docking, Target, Comms, Nav, Cargo, Market and Combat. `[` and `]` turn the pages. A page that needs you lights red, and `\` jumps to it. In flight 5 opens Comms there.
+- **New stations.** Four station types in 3D, with far edges dimmer. A station has a port at each end; dock at either one, within 30 degrees of its axis. Autodock turns and lines up. Near the port a bright gold box shows the approach, and the STATION beacon and Y guidance lead to the nearer port. The docking slot is a solid black opening. Lasers hit the station's real shape. You can't see through objects any more: a station's near side hides its far side, and ships, asteroids and mines hide what is behind them.
+- **A top bar with keys 1 to 9 on every screen.** The right-hand buttons are gone. Quit is the first item in 4 Menu, and modal screens have a Back button.
+- **Y guidance lines you up on the port.** From outside the 30 degree cone it flies you out to the port's axis, then glides onto the axis as you close, so it can bring you into the slot. The canopy says GUIDANCE Y LINING UP meanwhile.
+- The DAMAGE row leaves out whole fault names (shown as +N) instead of cutting one in half.
+- **Start screen.** The queue line no longer runs into the buttons. On the Riftdogs server, Online play before you're let in tells you where you stand (your place in the queue, or that it can't reach the server yet) instead of opening a sign-up form, and you're not asked for your email a second time.
+- From 4 Menu, another number opens its screen. The dead and prison screens have a Quit button again.
+- Long ship messages wrap onto two lines. The manual's Keys page fits above the footer.
+- **Herbert on screen.** He no longer just rings the radio: a panel with his portrait opens on the market screen while you're docked, and offers to show you the ropes. Tab or Left/Right picks a choice and Enter takes it; any other key closes the panel and does its usual job. Say yes and he talks you through your first trip; say no and he leaves you to it, and offers again if you call him docked. In flight his instructions sit in a small card in the forward view, or on the chart. He has five faces and talks like himself now, every line rewritten. Ctrl+H or 5 still calls him for your first three trips.
+
+# 0.13.0 — Herbert
+
+- **Herbert.** An old hauler calls brand-new commanders and talks them through their first trip: buy, launch, jump, dock, sell. He stays on the radio (5 comms panel, or Ctrl+H) for your first three trips. Existing commanders don't get the call.
+- Herbert works offline.
+
+# 0.12.0 — every copy stays in touch
+
+- **Every copy checks in.** The first time you start, the game asks for your email. News and offers are sent only if you tick the box. It then checks in with Riftdogs whenever the computer is online, offline play included, sending that email, the install ID and key Riftdogs gave this computer, the game version and your platform. See PRIVACY.md.
+- **Messages from Riftdogs** appear in the communicator (press 5) as RIFTDOGS. Important ones also say so on the cockpit message line.
+- **Bug reports and suggestions** now go out the next time this computer is online, in offline play too.
+- **Forget this computer** in Connection settings removes this install, its email and its messages from Riftdogs.
+- The start screen shows your place in the queue, and has a Join the galaxy button.
+- **Update notices.** When online play needs a newer version, the start screen says so first; if you chose Not now, U brings the update question back.
+
 # 0.11.1 — Mac launch fix
 
 - **Mac: the app opens again.** On Macs whose disk ignores capitals in file names (the default), the 0.11.0 installer wrote the launcher over the game's own copy of Python, so the app started itself in a loop and never opened. The launcher now has its own name. If Riftdogs 0.11.0 won't open on your Mac, install again from the release; your saved game is kept.

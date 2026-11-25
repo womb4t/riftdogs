@@ -24,11 +24,15 @@ import subprocess
 import textwrap
 from market import Market, demand_factor, quote_price
 import economy
+import herbert
+import herbert_view
 import payments
 import seal
+import stations
+import cockpit
 import secrets
 
-VERSION = '0.11.1'
+VERSION = '0.14.0'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
@@ -50,9 +54,24 @@ LOCAL_TRIP_METRES = PATROL_RADIUS+PATROL_RADIUS+2000
 SUN_RADIUS, SCOOP_ALTITUDE, SCOOP_SPEEDS = 220, 280, (10, 60)
 TRADE_LOG_SIZE = 200
 DOCK_ROLL_TOLERANCE = math.radians(14)
+DOCK_SPEED_LIMIT = 25
+AUTODOCK_CONE = math.radians(20)   # the docking computer flies out to the port's axis first beyond this
+STATION_NUMBER_RANGE = 3000   # the station's number shows on the hull within this range (m)
+# A dim gold box round the active port, the size 0.13 drew the slot (70 x 24 m), turned with the slot: a visual
+# target within 1.5 km. Docking still needs the true 28 x 12 m slot.
+STATION_SLOT = (0,0,0)   # the docking slot's opening: solid black, a shade under the canopy's
+APPROACH_BOX, APPROACH_BOX_HALF, APPROACH_BOX_RANGE = (230,185,95), (35.,12.), 1500
+
+
+def unit_vector(v, fallback=(0., 0., 1.)):
+    length = math.sqrt(sum(c*c for c in v))
+    return [c/length for c in v] if length > 1e-9 else list(fallback)
 CRUISE_SECONDS_PER_LY = 45
-PANEL_W = 1100        # the game's screens; the rail of screen buttons sits to its right
+PANEL_W = cockpit.CONTENT[2]   # the game's screens run the window's width under the top bar, to x 1188
 W, H = 1200, 790
+SPACE = (4,9,18)   # the colour of empty space; solid shapes are filled with it
+BOX_W = PANEL_W-46    # a full-width box from x 35, as far in from the content's right edge (x 1165)
+STATUS_PANEL_X = 35+BOX_W-265   # the market's COMMANDER STATUS column, under the top bar's credits block
 # The Relay's news ticker runs along the bottom of every screen, cockpit included.
 TICKER_Y, TICKER_H = 760, 30
 TICKER_SPEED = 60     # pixels a second
@@ -131,16 +150,36 @@ FLIGHT_CTRL = {ord('p'): ord('p'), ord('s'): ord('d'), ord('r'): ord('a'), ord('
                ord('f'): ord('i'), ord('g'): ord('y'), ord('e'): ord('6')}
 ANY_CTRL = {ord('n'): ord('-'), ord('m'): ord('3')}   # quick note; full screen (the Pixelbook has no F11)
 # While these are showing, the number row waits: they need an answer first.
-# The top bar, left to right, labelled with its number-row keys: (x, width, label, action).
-TOP_BAR = ((155,90,'1 Nav',('open_navigation',)), (250,90,'2 VMS',('open_hub','vms')),
-           (345,105,'3 Money',('open_hub','money')), (455,85,'4 Menu',('open_utility','menu')))
-# The rail down the right-hand side: the screens on the number row past 4 (x, label, key, the modes it lights).
-RAIL = ((5,'5 Comms',('comms',)), (6,'6 Ledger',('trades',)), (7,'7 Cargo',('cargo',)), (8,'8 Engine',('engineering',)), (9,'9 Manual',('help',)), (0,'0 Home',()))
+# The top bar on every screen, left to right, labelled with its number-row keys: (x, width, label, key). Each
+# button does what its key does; 0 Home is a key only.
+TOP_BAR = tuple(cockpit.top_bar())
+# The modes that light each key's button (5 COMMS also lights while the comms panel is open).
+TOP_BAR_LIT = {1: ('map','planet_profile'), 2: ('vms','outfit','engineering'), 3: ('money','bank','jobs','exchange'),
+               4: ('menu',), 5: ('comms',), 6: ('trades',), 7: ('cargo',), 8: ('engineering',), 9: ('help',)}
+BACK_BUTTON = (cockpit.CONTENT[0]+cockpit.CONTENT[2]-84, cockpit.CONTENT[1]+6, 84)   # x, y, w: the content's top-right
 HOLD_SCREENS = ('hyperspace', 'dead', 'prison', 'intro', 'hail', 'distress', 'departure', 'trade_deal')
 GREEN, GOLD, RED = (68, 227, 182), (255, 206, 113), (255, 112, 100)
-# The communicator in the cockpit: 5 opens a side panel over the right of the view (or the docked status panel).
+# The cockpit's panels: background, border, headings, quiet text and the canopy's struts.
+PANEL_FILL, PANEL_EDGE, CREAM, DIM, STRUT = (5, 16, 27), (45, 105, 115), (255, 242, 222), (135, 175, 185), (29, 59, 68)
+COCKPIT_MODES = ('flight', 'cruise', 'hyperspace')   # the modes drawn in the cockpit
+# The middle screen's keys: [ the previous page, ] the next, \ the lit page (backtick is the menu's).
+MIDDLE_KEYS = {ord('['): -1, ord(']'): 1, ord('\\'): 0}
+# The radar's centre: contacts sit within 85 px across and 53 px up and down of it.
+RADAR_CX, RADAR_CY = cockpit.RADAR[0]+cockpit.RADAR[2]//2, cockpit.RADAR[1]+97
+MESSAGE_ROW = 17        # the message line's second row sits this far under the first, above the ticker
+COCKPIT_STRIP_X = 600   # in the cockpit a live comms strip takes the status line's right part, from here on
+# The mouse flight controls (x, y, w, h): over the canopy's lower half, clear of the side panels.
+# Wide and low: under the crosshair and above the canopy's guidance and docking readout rows.
+CONTROLS_PANEL = (cockpit.VIEW_CENTRE[0]-285, cockpit.VIEW_CENTRE[1]+24, 570, 136)
+TOP_SPEED = 180         # an empty hold's top speed: the SPD gauge's full scale
+SHORT_GOODS = ('Food', 'Text', 'Ore', 'Mach', 'Med', 'Comp', 'Narc', 'Arms', 'Gold', 'Silv')   # the HOLD box's names
+# The communicator docked: 5 opens a side panel over the market's status panel. In flight and cruise it is the
+# middle screen's Comms page instead (see cockpit.MiddleScreen).
 COMMS_PANEL = (790, 70, 300, 680)    # x, y, w, h
-COMMS_PANEL_MODES = ('flight', 'cruise', 'market')
+COMMS_PANEL_MODES = ('market',)
+COMMS_PAGE_MODES = ('flight', 'cruise')            # where 5 selects the middle screen's Comms page
+COMMS_STRIP_MODES = COMMS_PANEL_MODES+COMMS_PAGE_MODES   # where the comms strip shows
+HERBERT_CARD_SECONDS = 20   # how long a called answer (or his farewell) stays on the flight card
 COMMS_PANEL_LINES = 14               # the latest messages it shows
 COMMS_WRAP = 25                      # characters a panel row holds
 # Quick replies on the panel: (button, what is sent to the panel's channel).
@@ -604,6 +643,7 @@ class Pilot:
         self.storage = [dict(owned=False,rented_until=0.,cargo=[0]*len(GOODS),paid=[0]*len(GOODS)) for _ in SYSTEMS]
         self.prison = None
         self.intro_seen = False
+        self.herbert = herbert.new_state()   # the old hauler's progress (herbert.py); saves without it never get his call
         self.edited = False   # set when an offline save's seal was broken; stays set (see seal.py)
         self.trade_log = []
         self.ledger = dict(days={},total={})
@@ -846,6 +886,7 @@ class Pilot:
             for key in vars(candidate):
                 if key in data: setattr(candidate, key, data[key])
             if 'position' not in data: candidate.position = coordinates(candidate.system)
+            if 'herbert' not in data: candidate.herbert = herbert.retired_state()   # an existing commander
             if isinstance(candidate.waypoint,dict) and candidate.waypoint.get('name') in RENAMED_SYSTEMS:
                 candidate.waypoint['name'] = RENAMED_SYSTEMS[candidate.waypoint['name']]
             candidate.add_new_commodities()
@@ -884,6 +925,7 @@ class Pilot:
         if not integer(self.trade_profit) or not integer(self.jumps): raise ValueError('career')
         if type(self.intro_seen) is not bool: raise ValueError('introduction')
         if type(self.edited) is not bool: raise ValueError('edited flag')
+        if not herbert.valid_state(self.herbert): self.herbert = herbert.retired_state()
         if not valid_ledger(self.ledger): raise ValueError('ledger')
         if not isinstance(self.trade_log,list) or len(self.trade_log) > TRADE_LOG_SIZE: raise ValueError('trade log')
         for entry in self.trade_log:
@@ -978,6 +1020,10 @@ def bind(lib, name, restype, args):
     return f
 
 
+class SDL_Vertex(C.Structure):
+    _fields_ = [('position',C.c_float*2),('color',C.c_uint8*4),('tex_coord',C.c_float*2)]
+
+
 class Display:
     def __init__(self):
         self.sdl = C.CDLL(find_sdl_library('SDL2'))
@@ -997,6 +1043,8 @@ class Display:
         self.free = bind(self.sdl, 'SDL_FreeSurface', None, [ptr])
         self.destroy = bind(self.sdl, 'SDL_DestroyTexture', None, [ptr])
         self.fill_rect = bind(self.sdl,'SDL_RenderFillRect',i,[ptr,ptr])
+        try: self.geometry = bind(self.sdl,'SDL_RenderGeometry',i,[ptr,ptr,C.POINTER(SDL_Vertex),i,ptr,i])
+        except AttributeError: self.geometry = None   # SDL older than 2.0.18: polygons are filled in rows
         self.query = bind(self.sdl, 'SDL_QueryTexture', i, [ptr, ptr, ptr, C.POINTER(i), C.POINTER(i)])
         bind(self.ttf, 'TTF_Init', i, [])()
         self.openfont = bind(self.ttf, 'TTF_OpenFont', ptr, [C.c_char_p, i])
@@ -1056,6 +1104,30 @@ class Display:
         self.color(self.r,*color,255)
         rect = (C.c_int*4)(int(x),int(y),int(w),int(h))
         self.fill_rect(self.r,rect)
+
+    def polygon(self, points, color, centre=None):
+        """Fill the polygon with these screen points, in order: a triangle fan from centre if given (an outline
+        star-shaped round it), else from the first point (convex)."""
+        n = len(points)
+        if self.geometry:
+            if centre is not None: triangles = [(centre,points[i],points[(i+1)%n]) for i in range(n)]
+            else: triangles = [(points[0],points[i],points[i+1]) for i in range(1,n-1)]
+            vertices = (SDL_Vertex*(3*len(triangles)))()
+            for k,(x,y) in enumerate(v for t in triangles for v in t):
+                vertices[k].position[:] = (x,y)
+                vertices[k].color[:] = (*color,255)
+            self.geometry(self.r,None,vertices,len(vertices),None,0)
+            return
+        # No SDL_RenderGeometry: even-odd rows through the outline's edges.
+        top = max(0,math.ceil(min(y for _,y in points)-.5))
+        bottom = min(H,math.ceil(max(y for _,y in points)-.5))
+        for y in range(top,bottom):
+            at = y+.5
+            crossings = sorted(x1+(at-y1)*(x2-x1)/(y2-y1) for (x1,y1),(x2,y2) in zip(points,points[1:]+points[:1])
+                               if y1 != y2 and min(y1,y2) <= at < max(y1,y2))
+            for a,b in zip(crossings[::2],crossings[1::2]):
+                x0,x1 = max(0,round(a)),min(W,round(b))
+                if x1 > x0: self.fill(x0,y,x1-x0,1,color)
 
     def rect(self, x, y, w, h, color=(68, 227, 182)):
         for a,b,c,d in [(x,y,x+w,y), (x+w,y,x+w,y+h), (x+w,y+h,x,y+h), (x,y+h,x,y)]:
@@ -1218,17 +1290,22 @@ class Game:
         self.comms_contact = None
         self.comms_number_typing, self.comms_number_text = False, ''
         self.comms_unread_after = 0     # messages from this arrival number on were unread when the page opened
-        self.panel_buttons = []         # the comms panel's own buttons, drawn over the cockpit
+        self.panel_buttons = []         # the comms panel's own buttons, drawn over the market's status panel
+        self.middle = cockpit.MiddleScreen()   # the cockpit's middle screen: the page the pilot picked, and the lit ones
+        self.middle_buttons, self.mode_buttons = [], []   # its arrows and page buttons, and the mode list's rows
         self.traffic = []  # bot trader ships near the station
         self.market = None  # local market; replaced by the shared one online (see update_market)
         self.market_client = None
+        self.checkin = None   # the check-in client (main() sets it); its thread does all the network work
+        self._checkin_wait = 0.
         self.shipments,self.market_offset,self.shown_shipments = [],0.,set()
         self.economy_reports,self.market_at,self.announced_events = None,0.,set()
         self.announced_decrees = None   # decree ids already reported (seeded with those made before you arrived)
         self.radar_range = SCANNER_RANGE
         self.story = None               # the ticker story whose window is open
         self.announced_tally = None     # the STA Tally day last reported
-        self.station = [0., 0., 1500.]
+        self.station = [0., 0., 1500.]   # port A's centre, camera-relative
+        self.station_axis = [0., 0., 1.]  # unit vector from port A towards port B, camera-relative
         self.roll = self.station_angle = 0.
         self.autodock = False
         self.station_hostilities = [False]*len(SYSTEMS)
@@ -1244,7 +1321,7 @@ class Game:
         self.station_laser_firing = False
         self.station_laser_timer = 15.
         self.enemy_police_system = None
-        self.course_assist = False
+        self.course_assist = self.guidance_fresh = False
         self.fine_control = False
         self.enemy = None
         self.ship_target = None
@@ -1274,6 +1351,7 @@ class Game:
         self.enemy_shot = None
         self.message = 'Welcome back, Commander.' if loaded else 'Welcome, Commander. 9 manual; U ship outfitting.'
         if loaded and self.p.edited: self.message = EDITED_NOTICE
+        self.view_labels = []
         self.stars = [[random.uniform(-1000,1000),random.uniform(-650,650),random.uniform(-1800,1800)] for _ in range(180)]
         self.broken_down = False
         self.breakdown_in = None
@@ -1286,7 +1364,7 @@ class Game:
         self.rescue_cooldown = 0.
         self.money_return = self.vms_return = 'market'
         self.outfit_return = 'market'
-        self.menu_selected = 0
+        self.menu_selected = 1   # Controls: Quit is first, so a stray Enter does not close the game
         self.notes_scroll = 0
         self.rename_return = 'market'
         self.intro_return = 'market'
@@ -1314,10 +1392,13 @@ class Game:
         self.mouse_held = set()
         self.buttons = []
         self.running = True
+        self.sale_profit,self.sale_pending = 0,False   # sales this visit not yet reported to Herbert
         self.settle_loaded_save()
+        self._herbert_seen_mode = self.mode
 
     def settle_loaded_save(self):
         """Where a freshly loaded pilot belongs (shared by startup and adopting the server's save)."""
+        self.herbert_panel = self.herbert_card = self.herbert_pending = None   # Herbert on screen: the docked panel and the flight card
         if self.p.hull <= 0: self.mode = 'dead'
         self.resume_saved_session()
         if self.p.prison:
@@ -1325,6 +1406,9 @@ class Game:
             self.update_prison()
         elif not self.p.intro_seen and self.mode == 'market' and self.d is not None:
             self.open_utility('intro')
+        if self.p.intro_seen: self.tutor.intro_closed()   # no-op unless he is still waiting for the intro to close
+        # Mid-trip, the current step again a few seconds after loading; an unanswered offer, its panel again.
+        self.herbert_resume = herbert.RESUME_DELAY if self.p.herbert['stage'] in ('guiding','offered') else None
 
     def save(self):
         self.checkpoint()
@@ -1347,10 +1431,12 @@ class Game:
         self.other_players.clear()
         self.traffic = []
         self.mode = 'flight'
+        self.herbert_panel = None   # his panel is for docked screens
         self.release_mouse()
         self.mouse_controls = False
         self.rear_view = False
         self.station = [0.,0.,1500.] if not self.p.deep_space else [0.,0.,1e9]
+        self.station_axis = unit_vector(self.station)   # port A faces you, the hull behind it
         self.planet = [-600.,240.,2400.]
         self.planet_radius = 70 + PROFILES[self.p.system][2]/100
         self.flyby_min = float('inf')
@@ -1370,7 +1456,7 @@ class Game:
         self.spawn = 18
         self.roll = self.station_angle = 0.
         self.autodock = False
-        self.course_assist = False
+        self.course_assist = self.guidance_fresh = False
         self.nav_target = None
         self.nav = 'course' if self.p.waypoint and galactic_distance(self.p.position,self.p.waypoint['position']) > .001 else 'station'
         self.heat = 0
@@ -1380,7 +1466,13 @@ class Game:
         self.sun = [1200.,-500.,3500.]
         self.ship_collision_cooldown = 0.
         self.message = 'Approach slowly. LEFT/RIGHT roll to match the rotating slot. 9 manual.'
+        if departure:
+            self.herbert_ring()   # off before his call: he calls now, so this trip is the guided one
+            self.herbert_report_sales()
+            self.herbert_event('launched',system=self.p.system)
         self.checkpoint()
+
+    CRITICAL = ('outfitting unavailable','thermal warning','station warning','station defence','station police','collision','breakdown','fuel exhausted','refused','seized','repair failed','mine detected','hostile contact','clearance granted','destroyed','rescued','scooped')
 
     @property
     def message(self):
@@ -1390,8 +1482,7 @@ class Game:
     def message(self,text):
         old = getattr(self,'_message','')
         self._message = text
-        critical = ('outfitting unavailable','thermal warning','station warning','station defence','station police','collision','breakdown','fuel exhausted','refused','seized','repair failed','mine detected','hostile contact','clearance granted','destroyed','rescued','scooped')
-        if text != old and any(word in text.lower() for word in critical):
+        if text != old and any(word in text.lower() for word in self.CRITICAL):
             self.alert = dict(text=text,remaining=5.,elapsed=0.)
 
     def notice(self, text):
@@ -1414,7 +1505,7 @@ class Game:
         if getattr(self,'_restoring',False): return
         # While the inbox is being settled the local save stays as uploaded: a crash then takes the server's copy.
         if getattr(self,'inbox_job',None) is not None: return
-        fields = ('world_basis','world_epoch','shield','speed','station','roll','station_angle','station_hostilities','station_hostile_until','security_elapsed','security_warning','security_dispatch','minor_offence','station_laser_warning','station_laser_timer','enemy_police_system','surrendering','autodock','course_assist','fine_control','enemy','enemy_kind',
+        fields = ('world_basis','world_epoch','shield','speed','station','station_axis','roll','station_angle','station_hostilities','station_hostile_until','security_elapsed','security_warning','security_dispatch','minor_offence','station_laser_warning','station_laser_timer','enemy_police_system','surrendering','autodock','course_assist','fine_control','enemy','enemy_kind',
                   'asteroids','fragments','sun','heat','nav','rear_view','planet','planet_radius',
                   'assist_speed','mine_objects','jamming','jammer_cooldown','cloaked','customs_checked',
                   'cruise','jump_warp','npc_mine_timer','spawn','cooldown','enemy_shot','broken_down','breakdown_in',
@@ -1478,6 +1569,10 @@ class Game:
             allowed = set(vars(self)) - {'d','p','keys','buttons','updates','running','_message','alert','_restoring'}
             for key,value in state.items():
                 if key in allowed: setattr(self,key,value)
+            axis = state.get('station_axis')
+            # A session from before 0.14 (or a damaged axis) gets the facing axis: port A towards you.
+            if type(axis) is not list or len(axis) != 3 or any(type(v) not in (int,float) for v in axis) or abs(sum(v*v for v in axis)-1) > .001:
+                self.station_axis = unit_vector(self.station)
             self.mode = 'dead' if self.p.hull <= 0 else mode
             self.ship_target = None
             self.jump_charge = None
@@ -1546,6 +1641,7 @@ class Game:
         before = self.mode
         if self.comms_shown() or self.mode == 'comms': self.comms.mark_read()   # what the panel or page shows has been seen
         if self.comms_typing and not self.comms_shown(): self.comms_typing,self.comms_line = False,''
+        self.update_middle()
         if self.comms_number_typing and self.mode != 'comms': self.comms_number_typing,self.comms_number_text = False,''
         # Play time for Money / Reports, written to the ledger every ten seconds or so.
         self.play_seconds = getattr(self,'play_seconds',0.)+min(dt,1.)
@@ -1577,6 +1673,9 @@ class Game:
         self._update_simulation(dt)
         self.update_alarm(dt)
         self.update_shared_presence()
+        self._checkin_wait += dt
+        if self._checkin_wait >= 1: self._checkin_wait = 0.; self.poll_checkin(); self.herbert_tick(1.0)
+        self.herbert_watch()
         self._save_elapsed += dt
         if self._save_elapsed >= 2 or before != self.mode:
             self.checkpoint()
@@ -1638,6 +1737,311 @@ class Game:
         return dict(system=self.p.system,mode=status,position=position if status == 'flight' else [0.,0.,0.],
                     velocity=velocity if status == 'flight' else [0.,0.,0.],epoch=self.world_epoch)
 
+    @property
+    def tutor(self):
+        """Herbert's behaviour over the pilot's saved state; follows the state whenever the pilot is replaced."""
+        tutor = getattr(self,'_tutor',None)
+        if tutor is None or tutor.state is not self.p.herbert: tutor = self._tutor = herbert.Tutor(self.p.herbert)
+        return tutor
+
+    PLAIN_DOCKED = 'Docked. 2 VMS for ship services; 3 Money; 1 Nav.'
+
+    def herbert_say(self, lines, message_line=True, asked=False):
+        """His lines go to the comms log as direct messages. The newest also goes on the message line unless that holds
+        something more important. Docked, they open his panel (all of them, with the choices for where the trip is) on
+        the market screen; said on another docked screen they wait for the market, unless the pilot asked for him
+        there (`asked`: Ctrl+H, Call Herbert, a choice on his panel), and never open over the launch warning. Flying,
+        the newest goes on his card: while guiding it stays until the next line (a step, even one asked for again),
+        anything else (an on-call answer, a farewell) for HERBERT_CARD_SECONDS. Flying, the middle screen never turns
+        by itself: his call lights the Comms page, which turns to it only when the pilot asked for him."""
+        if not lines: return
+        for line in lines: self.comms.local('HERBERT',str(line),channel='direct')   # plain text: the log keeps str only
+        calling = herbert.CALL_LINE in lines
+        if self.session_mode() == 'market':
+            self.herbert_card = None
+            if self.mode == 'market' or (asked and self.mode != 'launch_warning'):
+                if calling: self.comms.mark_read()   # read on his panel
+                self.herbert_show(lines)
+            else:
+                self.herbert_panel = None
+                self.herbert_pending = self.herbert_waiting(lines)
+        else:
+            if calling and asked and self.mode in COMMS_PAGE_MODES: self.select_page('comms')   # the pilot's own choice
+            last = lines[-1]
+            timed = self.p.herbert['stage'] != 'guiding'
+            self.herbert_panel = self.herbert_pending = None
+            self.herbert_card = dict(text=str(last),face=getattr(last,'face',None) or 'speaking',
+                                     until=time.monotonic()+HERBERT_CARD_SECONDS if timed else None)
+        if message_line and self.herbert_may_take_message_line():
+            self._message = 'Herbert: '+str(lines[-1])   # past the setter: his words are never a ship announcement
+
+    HERBERT_OFFER = ['Show me the ropes',"No thanks, I'll fly solo"]
+    HERBERT_STEP = ['Got it','Say again','Wave him off']
+
+    def herbert_show(self, lines, face=None):
+        """Open his docked panel on these lines, with the face of the last and the choices for the stage now."""
+        stage = self.p.herbert['stage']
+        choices = self.HERBERT_OFFER if stage == 'offered' else self.HERBERT_STEP if stage == 'guiding' else ['Got it']
+        lines,face = [str(line) for line in lines],face or getattr(lines[-1],'face',None) or 'speaking'
+        if stage == 'offered': self.herbert_offer_shown = (lines,face)   # for showing it again unanswered
+        self.herbert_pending = None
+        self.herbert_panel = dict(lines=lines,face=face,choices=list(choices),selected=0,hits=[],mode=self.mode)
+
+    def herbert_waiting(self, lines, face=None):
+        """Lines kept for his panel until the pilot is on the market screen, with the stage they were said in."""
+        return dict(lines=[str(line) for line in lines],face=face or getattr(lines[-1],'face',None) or 'speaking',
+                    stage=self.p.herbert['stage'])
+
+    def herbert_panel_here(self):
+        """His panel stays on the screen it opened on. If the game changed screens under it (the launch warning, the
+        departure screen), it closes and waits for the market. Returns the panel, or None."""
+        panel = self.herbert_panel
+        if panel is not None and panel.get('mode',self.mode) != self.mode:
+            self.herbert_panel = None
+            self.herbert_pending = self.herbert_waiting(panel['lines'],panel['face'])
+        return self.herbert_panel
+
+    def herbert_reopen_offer(self):
+        """The unanswered offer on his panel again, without saying it again (no comms-log entry)."""
+        if not self.tutor.offering() or self.session_mode() != 'market' or self.mode == 'launch_warning': return
+        shown = getattr(self,'herbert_offer_shown',None)
+        if shown: self.herbert_show(*shown)
+        else: self.herbert_show([herbert.CALL_LINE],herbert.FACE_OF['call'])   # after loading: the offer as he made it
+
+    def herbert_choose(self, index):
+        """Run the panel's choice at index (the panel closes first; what he says next may open it again)."""
+        panel = self.herbert_panel
+        if panel is None or not 0 <= index < len(panel['choices']): return
+        label = panel['choices'][index]
+        self.herbert_panel = None
+        if label == self.HERBERT_OFFER[0]:
+            self.herbert_plan()
+            self.herbert_say(self.tutor.accept(self.herbert_context()),asked=True)   # answered where the pilot is
+        elif label == self.HERBERT_OFFER[1]: self.herbert_say(self.tutor.decline(self.herbert_context()),asked=True)
+        elif label == 'Say again': self.call_herbert()
+        elif label == 'Wave him off': self.wave_herbert_off()
+
+    HERBERT_MODIFIERS = range(1073742048,1073742056)   # Ctrl, Shift, Alt and GUI pressed alone
+
+    def herbert_panel_key(self, k, ctrl=False):
+        """While his panel is open: Tab and Right move the highlight on, Left back, Enter chooses (returns True: the key
+        is used). Any other key (Up/Down too: they pick the market's goods) closes the panel and goes on to do its
+        usual job (returns False)."""
+        panel = self.herbert_panel_here()
+        if panel is None or k in self.HERBERT_MODIFIERS or getattr(self,'story',None): return False   # under a story window
+        if not ctrl and k in (TAB,RIGHT,LEFT):
+            panel['selected'] = (panel['selected']+(-1 if k == LEFT else 1))%len(panel['choices'])
+            return True
+        if not ctrl and k == 13:
+            self.herbert_choose(panel['selected'])
+            return True
+        self.herbert_panel = None
+        return False
+
+    def herbert_panel_click(self, x, y):
+        """A click on one of his choices runs it (True); anywhere else closes the panel and is handled as usual."""
+        panel = self.herbert_panel_here()
+        if panel is None: return False
+        for (bx,by,w,h),index in panel['hits']:
+            if bx <= x < bx+w and by <= y < by+h:
+                self.herbert_choose(index)
+                return True
+        self.herbert_panel = None
+        return False
+
+    def herbert_watch(self):
+        """Each frame: the panel only docked and the card only flying; a timed card goes when its time is up; lines
+        kept for the market open his panel there (if still for the stage he is in); and an unanswered offer comes back
+        once each time the pilot returns to the market from another docked screen."""
+        seen,self._herbert_seen_mode = getattr(self,'_herbert_seen_mode',self.mode),self.mode
+        docked = self.session_mode() == 'market'
+        if docked:
+            self.herbert_card = None
+            self.herbert_panel_here()
+        else: self.herbert_panel = self.herbert_pending = None
+        card = self.herbert_card
+        if card and card['until'] is not None and time.monotonic() >= card['until']: self.herbert_card = None
+        if not (docked and self.mode == 'market' and self.herbert_panel is None): return
+        pending,self.herbert_pending = getattr(self,'herbert_pending',None),None
+        if pending and pending['stage'] == self.p.herbert['stage']: self.herbert_show(pending['lines'],pending['face'])
+        elif seen != 'market' and self.tutor.offering(): self.herbert_reopen_offer()
+
+    def herbert_card_hidden(self):
+        """The card gives way to the alarm banner, an incoming-fire warning and the thermal warning."""
+        return bool(self.alarm) or bool(self.enemy_shot) or self.heat >= 70
+
+    def herbert_portraits(self):
+        """His faces as textures, loaded once per display on first use ({} without a real display). Loading sets SDL's
+        scale-quality hint for the portraits only: it is put back so text textures made afterwards stay crisp."""
+        d = self.d
+        if not isinstance(d,Display): return {}
+        cached = getattr(self,'_herbert_portraits',None)
+        if cached and cached[0] is d: return cached[1]
+        hint = b'SDL_RENDER_SCALE_QUALITY'
+        before = bind(d.sdl,'SDL_GetHint',C.c_char_p,[C.c_char_p])(hint)
+        portraits = herbert_view.load_portraits(d)
+        bind(d.sdl,'SDL_SetHint',C.c_int,[C.c_char_p,C.c_char_p])(hint,before if before is not None else b'0')
+        self._herbert_portraits = (d,portraits)
+        return portraits
+
+    def draw_herbert(self):
+        """Drawn last, over everything: his panel on any docked screen, or his card while flying (on the flight view
+        and the chart only, and not while an alarm, incoming fire or the thermal warning is showing)."""
+        base = self.session_mode()
+        panel = self.herbert_panel_here() if base == 'market' else None
+        if panel is not None and base == 'market' and not getattr(self,'story',None):   # a story window stays on top
+            panel['hits'] = herbert_view.draw_panel(self.d,self.herbert_portraits(),panel['face'],panel['lines'],panel['choices'],panel['selected'])
+        card = self.herbert_card
+        if card is None or base == 'market' or self.herbert_card_hidden(): return
+        if card['until'] is not None and time.monotonic() >= card['until']: return
+        rect = herbert_view.card_rect_for(self.mode)
+        if rect: herbert_view.draw_card(self.d,self.herbert_portraits(),card['face'],card['text'],rect)
+
+    def herbert_may_take_message_line(self):
+        """Docked, only the plain "Docked" line gives way (never customs, a fine or a flare notice); anywhere, a
+        warning stays. Clearance granted is shown in its own announcement box, so the docking hint may follow it."""
+        text = self.message.lower()
+        if text.startswith('herbert: '): return True   # his own last word, whatever it mentions
+        if text.startswith('docked'): return self.message == self.PLAIN_DOCKED
+        if 'solar flare' in text: return False
+        return not any(word in text for word in self.CRITICAL if word != 'clearance granted')
+
+    def herbert_context(self, **extra):
+        p = self.p
+        here = None if p.deep_space else p.system
+        course = p.waypoint if isinstance(p.waypoint,dict) and p.waypoint.get('position') else None
+        course_set = bool(course) and galactic_distance(p.position,course['position']) > .001
+        plan = p.herbert['plan']
+        ctx = dict(system=here,system_name=SYSTEMS[here][0] if here is not None else 'deep space',
+                   docked=self.session_mode() == 'market',cargo=sum(p.cargo),course_set=course_set,
+                   fuel=float(p.fuel),fuel_needed=self.jump_fuel_to(course) if course_set else None,
+                   under_attack=self.enemy is not None and self.session_mode() == 'flight',
+                   can_afford=self.herbert_can_afford(),
+                   plan_good_name=plan['good'] if plan else None,
+                   plan_system_name=SYSTEMS[plan['system']][0] if plan and 0 <= plan['system'] < len(SYSTEMS) else None)
+        ctx.update(extra)
+        return ctx
+
+    def herbert_can_afford(self):
+        """Docked: whether the wallet buys a tonne of any legal good in stock here (elsewhere: assumed so)."""
+        if self.session_mode() != 'market' or self.p.deep_space: return True
+        here = self.p.system
+        def stocked(good):
+            stock = stock_level(here,good)
+            return stock is None or stock > 0
+        return any(quote(here,good,True) <= self.p.credits for good in range(len(GOODS)) if good not in ILLEGAL and stocked(good))
+
+    def herbert_plan(self):
+        """What to suggest: the trade that makes most on the whole trip from this station to a port a full tank reaches
+        (see herbert.pick_trade), for the hold space and credits the pilot has; with legal cargo aboard, for that cargo."""
+        if self.p.deep_space: return
+        here = self.p.system
+        legal = [name for i,name in enumerate(GOODS) if i not in ILLEGAL]
+        def buy_price(name):
+            good = GOODS.index(name)
+            stock = stock_level(here,good)
+            return None if stock is not None and stock <= 0 else quote(here,good,True)
+        def sell_price(system, name):
+            return None if solar_flare() else quote(system,GOODS.index(name),False)
+        reachable = sorted(self.systems_in_range(FUEL_CAPACITY),key=lambda j:galactic_distance(self.p.position,coordinates(j)))
+        industrial = [i for i in range(len(SYSTEMS)) if SYSTEMS[i][1] == 'Industrial']
+        held = {GOODS[i]:n for i,n in enumerate(self.p.cargo) if n > 0 and i not in ILLEGAL}
+        if held:
+            # Already bought: where the goods aboard make most, by what was paid for them (already spent: the
+            # credits passed just cover them), each for the tonnes held. Nothing pays: the biggest load to the nearest port.
+            def paid(name):
+                good = GOODS.index(name)
+                return self.p.cargo_paid[good]/self.p.cargo[good] if self.p.cargo_paid[good] > 0 else quote(here,good,True)
+            picks = [(trade['margin']*held[name],trade) for name in held
+                     for trade in [herbert.pick_trade(here,[name],paid,sell_price,reachable,paid(name)*held[name]+1,held[name],GOODS[0],industrial)]
+                     if trade['margin'] is not None]
+            if picks: trade = max(picks,key=lambda pick: pick[0])[1]
+            else:
+                away = [j for j in reachable if j != here] or [here]
+                trade = dict(good=max(held,key=held.get),system=away[0],margin=None)
+        else:
+            room = max(0,self.p.capacity-sum(self.p.cargo))
+            trade = herbert.pick_trade(here,legal,buy_price,sell_price,reachable,self.p.credits,room,GOODS[0],industrial)
+        self.tutor.set_plan(trade)
+
+    def herbert_report_sales(self):
+        """Tell him about the sales made this visit, once, with their total profit (one 'sold' per finished sale)."""
+        if not self.sale_pending: return
+        profit,self.sale_profit,self.sale_pending = self.sale_profit,0,False
+        self.herbert_event('sold',profit=profit)
+
+    def herbert_event(self, name, **extra):
+        self.herbert_say(self.tutor.event(name,self.herbert_context(**extra)))
+
+    def herbert_resync(self):
+        """Moved somewhere without flying there (a replacement ship, a salvage tow): his guidance follows. Docked with
+        an empty hold, the trade is picked afresh for this station first."""
+        if self.p.herbert['stage'] != 'guiding': return
+        if self.session_mode() == 'market' and sum(self.p.cargo) == 0: self.herbert_plan()
+        self.herbert_say(self.tutor.resync(self.herbert_context()),message_line=False)   # the recovery or tow notice stays
+
+    def herbert_tick(self, dt):
+        if self.mode in ('dead','intro'): return
+        state = self.p.herbert
+        if getattr(self,'herbert_resume',None) is not None:
+            self.herbert_resume -= dt
+            if self.herbert_resume <= 0:
+                self.herbert_resume = None   # once per load
+                if self.tutor.offering():
+                    if self.mode == 'market' and self.herbert_panel is None: self.herbert_reopen_offer()
+                else: self.herbert_say(self.tutor.reminder(self.herbert_context()))
+        if state['stage'] == 'waiting':
+            if self.mode != 'market': return   # the countdown waits for the docked screen: never over another screen or in flight
+            if state['since_intro'] is not None: self.herbert_plan()   # current on the tick that fires the call
+        self.herbert_say(self.tutor.tick(dt,self.herbert_context()))
+
+    def herbert_ring(self, asked=False):
+        """The pilot is leaving (or asked for him) while his call is counting down: he calls now."""
+        state = self.p.herbert
+        if state['stage'] != 'waiting' or state['since_intro'] is None: return
+        if asked and self.session_mode() != 'market':
+            # Asked for while flying: there is no offer in flight (its choices live on the docked panel), so he says to
+            # call him once docked, and the countdown carries on there. (Launching rings first, then declines.)
+            return self.herbert_say(self.tutor.later(self.herbert_context()),asked=asked)
+        self.herbert_plan()   # from this system's market, even on the way out
+        self.herbert_say(self.tutor.ring(self.herbert_context()),asked=asked)
+
+    def call_herbert(self):
+        tutor = self.tutor
+        if self.p.herbert['stage'] == 'waiting' and self.p.herbert['since_intro'] is not None: return self.herbert_ring(asked=True)
+        if not tutor.can_call():
+            self.message = "Herbert's off the radio."
+            return
+        if tutor.offering() and self.session_mode() == 'market': return self.herbert_reopen_offer()   # shown, not said again
+        if self.p.herbert['stage'] != 'guiding' and self.session_mode() == 'market': self.herbert_plan()   # today's trade, not trip 1's
+        self.herbert_say(tutor.call(self.herbert_context()),asked=True)
+
+    def wave_herbert_off(self):
+        self.herbert_say(self.tutor.wave_off(),asked=True)   # the pilot's own choice, answered where they are
+
+    def herbert_actions(self):
+        """His buttons while he can be called: [(width, label, action)]."""
+        if not self.tutor.can_call(): return []
+        if self.p.herbert['stage'] == 'offered': return [(144,'Talk to Herbert',self.herbert_reopen_offer)]
+        if self.p.herbert['stage'] == 'guiding':
+            return [(216,'Herbert: say again',self.call_herbert),(144,'Wave him off',self.wave_herbert_off)]
+        return [(144,'Call Herbert',self.call_herbert)]
+
+    def draw_herbert_controls(self, x, y):
+        """Pinned under the docked panel's divider while he can be called: returns the height they take."""
+        actions = self.herbert_actions()
+        for i,(w,label,action) in enumerate(actions): self.panel_button(x+10,y+28*i,w,label,action)
+        return 28*len(actions)
+
+    def poll_checkin(self):
+        """Once a second: messages from Riftdogs that the check-in thread fetched go into the comms log."""
+        client = getattr(self,'checkin',None)
+        if client is None: return
+        for notice in client.take_new_notices():
+            important = bool(notice.get('important'))
+            self.comms.local('RIFTDOGS',notice['text'],priority='urgency' if important else 'routine')
+            if important: self.message = 'Message from Riftdogs: press 5 to read.'
+
     def update_shared_presence(self):
         presence = getattr(self,'presence',None)
         if presence is None: return
@@ -1698,11 +2102,12 @@ class Game:
         d = self.d
         bright = int(self.alert['elapsed']*4)%2 == 0
         color = GOLD if bright else (155,100,65)
-        x,y,w = (210,110,610) if self.mode == 'flight' else (180,465,740)
+        cockpit_view = self.mode in COCKPIT_MODES
+        x,y,w = (cockpit.VIEW_CENTRE[0]-305,cockpit.VIEW[1]+60,610) if cockpit_view else (180,465,740)
         d.fill(x,y,w,100,(12,13,23))
         d.rect(x,y,w,100,color)
         d.text(x+15,y+7,'SHIP ANNOUNCEMENT',color)
-        lines = textwrap.wrap(self.alert['text'],width=52 if self.mode == 'flight' else 64)
+        lines = textwrap.wrap(self.alert['text'],width=52 if cockpit_view else 64)
         for i,line in enumerate(lines[:3]): d.text(x+15,y+33+i*21,line,GREEN)
 
     def bank_transfer(self,deposit):
@@ -1780,8 +2185,9 @@ class Game:
         destination = min((i for i in range(8) if self.station_allows(i)),key=lambda i:galactic_distance(self.p.position,coordinates(i)))
         self.arrive(coordinates(destination),destination)
         self.dock_clearance = 120
-        self.dock()
+        self.dock(tell_herbert=False)   # a replacement ship is not a trip
         self.message = f'Replacement starter ship recovered. Bank fee {fee:.2f} cr; station cargo preserved.'
+        self.herbert_resync()
 
     def draw_bank(self):
         d,p = self.d,self.p
@@ -1824,6 +2230,7 @@ class Game:
         return warnings
 
     def request_launch(self):
+        self.herbert_ring()
         if self.p.fine and PROFILES[self.p.system][0] not in ('Anarchy','Feudal'):
             self.message = f'STATION CONTROL: launch clearance withheld until your {self.p.fine} cr fine is paid: 3 Money, then F Pay fines.'; self.radio('STATION CONTROL','safety')
             return
@@ -1902,6 +2309,7 @@ class Game:
         self.dock_clearance = 120
         self.dock()
         self.message = f'Rescued to {SYSTEMS[self.p.system][0]}. Salvage: {fee["credits"]:.2f} cr + {fee["tonnes"]}t. Fuel full; saved.'
+        self.herbert_resync()
 
     def draw_launch_warning(self):
         d,p = self.d,self.p
@@ -2407,7 +2815,7 @@ class Game:
             return f' Customs seized {count}t contraband; fine {count*25} cr.'
         return ''
 
-    def dock(self):
+    def dock(self, tell_herbert=True):
         if self.p.deep_space: return
         self.end_trading_visit()
         if not self.docking_permitted():
@@ -2416,6 +2824,7 @@ class Game:
         arrest = self.arrest_pending()
         inspection = self.inspect_cargo() if not self.customs_checked and not arrest else ''
         self.mode = 'market'
+        self.herbert_card = None   # the flight card goes on docking
         self.shield = 100
         self.speed = 0
         self.autodock = False
@@ -2424,6 +2833,8 @@ class Game:
         self.message = ('Docked.' + inspection) if inspection else 'Docked. 2 VMS for ship services; 3 Money; 1 Nav.'
         if solar_flare() and not inspection: self.message = 'Docked. A solar flare is blocking comms; BEST SALE has no signal.'
         if arrest: self.arrest()
+        self.sale_profit,self.sale_pending = 0,False
+        if tell_herbert and self.mode == 'market': self.herbert_event('docked')
         self.save()
         if self.mode == 'market': self.collect_inbox()
 
@@ -2510,15 +2921,72 @@ class Game:
         self.message = self.CONTACTING
         return True
 
+    def station_kind(self):
+        """The station type of the current system ('hub', 'industrial', 'research' or 'frontier')."""
+        s = self.p.system
+        return stations.station_type(PROFILES[s][0], TECH[s], SYSTEMS[s][1])
+
+    def active_port(self):
+        """The nearer port, 'A' or 'B': the one docking, the Docking page and autodock use."""
+        return stations.nearer_port(self.station, self.station_axis)
+
+    def docking_port(self):
+        """(name, port, offset) for the nearer port: its camera-relative centre and outward vector, and the
+        camera in the port's frame (x along the slot's long side, y across it, z the distance out in front).
+        The vectors are the un-rolled flight frame that `project` rolls, so the spin is the station's own angle."""
+        name = self.active_port()
+        port = stations.ports(self.station, self.station_axis)[name]
+        return name, port, stations.port_offset(self.station, self.station_axis, self.station_angle, name)
+
+    def approach_box(self):
+        """The approach box's four corners (camera-relative, un-rolled; the first edge a long side), or None: only
+        in flight, in front of the active port and within APPROACH_BOX_RANGE of it, with the Docking page's
+        condition on (station control range or clearance)."""
+        if self.mode != 'flight' or self.p.deep_space or not self.middle_conditions()['docking']: return None
+        name,port,(_,_,out) = self.docking_port()
+        if out <= 0 or sum(v*v for v in port['position']) > APPROACH_BOX_RANGE**2: return None
+        z = 0. if name == 'A' else stations.LENGTH
+        hx,hy = APPROACH_BOX_HALF
+        return [list(stations.to_view((x,y,z),self.station,self.station_axis,self.station_angle))
+                for x,y in ((-hx,-hy),(hx,-hy),(hx,hy),(-hx,hy))]
+
+    def slot_angle(self):
+        """The angle of the slot's long side as it lies across the (un-rolled) view; head on to port A it is
+        station_angle."""
+        ex = stations.to_view((1., 0., 0.), (0., 0., 0.), self.station_axis, self.station_angle)
+        return math.atan2(ex[1], ex[0])
+
     def slot_error(self):
+        # The slot's long side against the ship's roll: head on to port A, today's station_angle - roll.
         # A rectangular slot has the same orientation after half a turn.
-        return (self.station_angle - self.roll + math.pi/2) % math.pi - math.pi/2
+        return (self.slot_angle() - self.roll + math.pi/2) % math.pi - math.pi/2
 
     def docking_safe(self):
-        x,y,_ = self.station
-        c,s = math.cos(self.station_angle),math.sin(self.station_angle)
-        x,y = x*c+y*s,-x*s+y*c
-        return abs(x) <= 14 and abs(y) <= 6 and 0 < self.speed <= 25 and abs(self.slot_error()) <= DOCK_ROLL_TOLERANCE + 1e-12 and not self.enemy and self.dock_clearance > 0 and self.docking_permitted()
+        _,port,(x,y,_) = self.docking_port()
+        # Today's check, unchanged: the port's centre, as seen from the nose and turned with the slot, inside
+        # the slot. It keeps the nose on the port (no docking while flying sideways down the axis).
+        px,py,_ = port['position']
+        c,s = math.cos(self.slot_angle()),math.sin(self.slot_angle())
+        ahead = abs(px*c+py*s) <= stations.SLOT_HALF_LONG and abs(-px*s+py*c) <= stations.SLOT_HALF_SHORT
+        # And the new one: on the port's own axis, within its approach cone.
+        return (ahead and abs(x) <= stations.SLOT_HALF_LONG and abs(y) <= stations.SLOT_HALF_SHORT
+                and stations.approach_angle(port) <= stations.APPROACH_CONE + 1e-12
+                and 0 < self.speed <= DOCK_SPEED_LIMIT and abs(self.slot_error()) <= DOCK_ROLL_TOLERANCE + 1e-12
+                and not self.enemy and self.dock_clearance > 0 and self.docking_permitted())
+
+    def port_readout(self):
+        """The nearer port's approach numbers for the Docking page."""
+        name,port,_ = self.docking_port()
+        # Where the ship sits against the port's axis: `along` it (metres out in front) and `across` it (signed by
+        # which side of the axis it is on, as seen on screen).
+        to_camera = [-v for v in port['position']]
+        along = sum(a*b for a,b in zip(to_camera,port['outward']))
+        side = [c-along*o for c,o in zip(to_camera,port['outward'])]
+        across = math.hypot(*side)*(1 if side[0]+1e-3*side[1] >= 0 else -1)
+        return dict(port=name,along=along,across=across,range=math.sqrt(sum(v*v for v in port['position'])),
+                    align_deg=math.degrees(stations.approach_angle(port)),
+                    roll_deg=math.degrees(self.slot_error()),
+                    speed=self.speed, limit=DOCK_SPEED_LIMIT, clearance=self.dock_clearance)
 
     def damage(self, amount):
         absorbed = min(self.shield, amount)
@@ -2866,7 +3334,7 @@ class Game:
                 pay = ('15-25','20-35','25-40')[i]
                 line = f'{titles[i]} / {remaining} left / {pay} cr'
 
-                d.rect(35,150+i*75,1020,60,GOLD if i == self.job_selected else (45,105,115))
+                d.rect(35,150+i*75,BOX_W-10,60,GOLD if i == self.job_selected else (45,105,115))
                 d.text(45,170+i*75,('> ' if i == self.job_selected else '  ')+line,GOLD if i == self.job_selected else GREEN)
             d.text(45,440,'Limited shifts per station per 24 hours. Accepting reserves one shift.')
             d.text(45,480,'Workshop shifts earn 10 XP; practice adds up to 5% repair chance.')
@@ -3008,7 +3476,7 @@ class Game:
             self.feedback_path = str(path)
             self.feedback_text = ''
             label = 'Bug report' if entry['kind'] == 'bug' else 'Suggestion'
-            self.message = f'{label} logged. It is sent to the developers next time you play online.'
+            self.message = f'{label} logged. It is sent to the developers the next time this computer is online.'
             return True
         except OSError as error:
             self.feedback_error = 'Could not log feedback: '+str(error)
@@ -3022,7 +3490,7 @@ class Game:
         d = self.d
         d.text(35,85,'BUG REPORTS AND SUGGESTIONS',GOLD)
         d.text(35,125,'Type what happened, steps to reproduce, and what you expected.')
-        d.rect(35,205,1030,305,GREEN)
+        d.rect(35,205,BOX_W,305,GREEN)
         lines = []
         for paragraph in self.feedback_text.split('\n'):
             lines.extend(textwrap.wrap(paragraph,89) or [''])
@@ -3031,7 +3499,7 @@ class Game:
             if i == len(shown)-1: self.text_cursor(45,215+i*25,line,(160,225,213))
             else: d.text(45,215+i*25,line)
         d.text(45,490,f'{len(self.feedback_text)}/1500 characters',GOLD)
-        d.text(35,535,'Each report is logged separately and sent to the developers when you play online.')
+        d.text(35,535,'Each report is logged separately and sent when this computer is next online.')
         d.text(35,570,'Includes version, platform, screen and system; no save file attached.')
         error = getattr(self,'feedback_error',None)
         if error and not self.feedback_text.strip(): d.text(300,490,error,RED)
@@ -3056,7 +3524,7 @@ class Game:
             'BACKSPACE goes back. ESC saves and closes the game at any time. Menu, Controls has the full pilot handbook.']),
         ('BUGS AND SUGGESTIONS',[
             'Riftdogs is being built with its players. Found a bug or have an idea? Press 0 (or Menu, Report a bug), choose Bug report or Suggestion, describe it and click Log report.',
-            'Each report is logged on your computer and reaches the developers the next time you play online.',
+            'Each report is logged on your computer and reaches the developers the next time this computer is online.',
             'The game updates itself when a new version is released, so your idea might arrive in the next one. Good luck, Commander.'])]
 
     def intro_next(self):
@@ -3070,6 +3538,7 @@ class Game:
             self.intro_page += 1
             return
         self.p.intro_seen = True
+        self.tutor.intro_closed()
         self.mode = self.intro_return
         self.message = 'Welcome aboard, Commander. Press 0 any time to send a suggestion.'
         self.checkpoint()
@@ -3344,7 +3813,7 @@ class Game:
             d.text(45,top+30,text)
             value = self.credit_code_text if field == 'code' else self.pay_amount_text
             box = top+85
-            d.rect(35,box,1030,60,GREEN if focused else dim)
+            d.rect(35,box,BOX_W,60,GREEN if focused else dim)
             if focused and self.text_selection_all and self.text_selection_mode == 'redeem': d.fill(40,box+5,max(20,len(value)*11+20),42,(20,65,70))
             if focused: self.text_cursor(45,box+20,value)
             else: d.text(45,box+20,value,dim)
@@ -3488,7 +3957,7 @@ class Game:
             for j,line in enumerate(textwrap.wrap(note,44)): d.text(580,340+j*25,line,dim)
         else: d.text(580,340,f'Average of {info["commanders"]} commanders.',dim)
 
-        d.line(35,488,PANEL_W-35,488)
+        d.line(35,488,35+BOX_W,488)
         y = 500
         for line in report_verdict(bucket,average):
             for part in textwrap.wrap(line,90):
@@ -3499,7 +3968,7 @@ class Game:
     def draw_notepad(self):
         d = self.d
         d.text(35,85,'NOTES / YOUR PERSONAL NOTEPAD',GOLD)
-        d.rect(35,130,1030,465,GREEN)
+        d.rect(35,130,BOX_W,465,GREEN)
         lines = []
         for paragraph in self.p.notes.split('\n'): lines.extend(textwrap.wrap(paragraph,89) or [''])
         self.notes_scroll = max(0,min(self.notes_scroll,max(0,len(lines)-17)))
@@ -3588,18 +4057,23 @@ class Game:
 
     def menu_actions(self):
         return [
+            ('Quit',self.request_exit),   # was the top bar's Quit; it saves first, like Esc
             ('Controls',lambda:self.open_utility('help')),
             ('Notes',lambda:self.open_utility('notes')),
             ('Report a bug / Ctrl+0',lambda:self.open_utility('feedback')),
             ('Check updates',lambda:self.open_utility('updates')),
             ('Fullscreen / Ctrl+M',self.mouse_fullscreen),
-            ('Save and quit',self.request_exit),
             ('Commander name',lambda:self.open_utility('rename')),
             ('Introduction',lambda:self.open_utility('intro'))]
 
     def choose_menu_action(self, index):
         self.mode = self.menu_return
         self.menu_actions()[index][1]()
+
+    MENU_ITEM_W = (BOX_W-20)//2   # two columns across the content area
+
+    def menu_item_position(self, i):
+        return 35+(i%2)*(self.MENU_ITEM_W+20),200+(i//2)*110
 
     def draw_menu(self):
         d = self.d
@@ -3611,9 +4085,9 @@ class Game:
         d.text(35,155,(remote.update_required or remote.status) if remote else 'Offline game: progress saved on this laptop.',status_color)
         presence = getattr(self,'presence',None)
         if presence: d.text(35,180,presence.status+(' · '+self.market_client.status if self.market_client else ''),(140,185,255))
-        descriptions = ['Key bindings and flight help','Your saved private notes','Bug reports and suggestions','Check for game updates','Toggle display size','Save current state and close','Name shown on your status panel','Who you are and how to play']
+        descriptions = ['Save current state and close','Key bindings and flight help','Your saved private notes','Bug reports and suggestions','Check for game updates','Toggle display size','Name shown on your status panel','Who you are and how to play']
         for i,description in enumerate(descriptions):
-            x,y = 35+(i%2)*515,200+(i//2)*110
+            x,y = self.menu_item_position(i)
             d.text(x+10,y+42,description,(135,175,185))
 
     def text_cursor(self, x, y, text, color=GOLD):
@@ -3627,6 +4101,8 @@ class Game:
     def keyboard(self, k, ctrl=False):
         """A key from the keyboard: the key map above, then the game's own handlers."""
         self.swallow_text = None
+        # Herbert's panel takes Tab/Left/Right/Enter; any other key closes it and carries on (not while typing).
+        if not (self.comms_typing_now() or self.typing() or self.inbox_busy()) and self.herbert_panel_key(k, ctrl): return
         # Typing: nothing reaches the ship or screens, except Escape, the global save-and-close.
         if self.comms_typing_now() and k != 27: return self.comms_key(k, ctrl)
         if k == 13 and not ctrl and self.comms_shown(): return self.start_comms_typing()
@@ -3636,8 +4112,10 @@ class Game:
         if self.mode == 'comms' and not ctrl and self.comms_page_key(k): return
         if k == 27 or self.typing(): return self.key(k)   # Esc, and typing into text fields, as before
         if k == ord('p') and not ctrl and self.comms_shown(): return self.cycle_comms_priority()
+        if not ctrl and k in MIDDLE_KEYS and self.mode in COCKPIT_MODES: return self.middle_key(k)
         if k == F11: return self.key(ord('3'))             # full screen
         if ctrl and k == ord('l') and self.mode in ('flight','cruise'): return self.toggle_radar_range()
+        if ctrl and k == ord('h') and self.mode in COMMS_STRIP_MODES+('map',): return self.call_herbert()
         if ctrl:
             legacy = ANY_CTRL.get(k) or (FLIGHT_CTRL.get(k) if self.mode in ('flight','cruise') else None)
             return self.key(legacy) if legacy is not None else None
@@ -3650,8 +4128,9 @@ class Game:
     def open_screen(self, n):
         """The number row: the same screen from anywhere (pressing it again goes back)."""
         if self.mode == 'menu':
-            if n == 4: self.mode = self.menu_return
-            return   # the menu waits for a choice
+            # 4 closes the menu; another number closes it and opens that screen, as if from where you were.
+            self.mode = self.menu_return
+            if n == 4: return
         if self.mode in HOLD_SCREENS: return
         self.alert = None
         if n == 0:   # home: the market when docked, the cockpit when flying
@@ -3665,6 +4144,7 @@ class Game:
             self.release_mouse(); self.keys.clear()
         elif n == 5:
             if self.mode == 'comms': self.leave_comms_page()
+            elif self.mode in COMMS_PAGE_MODES: self.select_page('comms')
             elif self.mode in COMMS_PANEL_MODES: self.toggle_comms_panel()
             else: self.message = 'The comms panel opens in the cockpit or docked: 0 Home, then 5. Ctrl+5 opens the full comms page.'
         elif n == 6:
@@ -3681,9 +4161,46 @@ class Game:
             if self.mode == 'help': self.mode = self.help_return
             else: self.help_return,self.mode = self.mode,'help'; self.keys.clear()
 
+    # ---- the middle screen: seven pages the pilot picks; a page that needs you lights in the mode list
+    def middle_key(self, k):
+        if MIDDLE_KEYS[k]: return self.turn_page(MIDDLE_KEYS[k])
+        if not self.middle.jump(): self.message = 'Nothing needs you: no page is lit. [ and ] turn the pages.'
+        self.page_turned()
+
+    def turn_page(self, delta):
+        self.middle.step(delta)
+        self.page_turned()
+
+    def select_page(self, page):
+        self.middle.select(page)
+        self.page_turned()
+
+    def page_turned(self):
+        """Typing ends with the Comms page gone; on it, what it shows has been read."""
+        if self.comms_shown(): self.comms.mark_read()
+        elif self.comms_typing: self.comms_typing,self.comms_line = False,''
+
+    def middle_conditions(self):
+        """What lights each page, worked out every tick: Combat while a hostile is attacking or the alarm sounds;
+        Comms on an unread direct message, Mayday or Pan-Pan; Docking within station control range, or cleared."""
+        near = (self.mode == 'flight' and not self.p.deep_space
+                and math.sqrt(sum(v*v for v in self.station)) <= cockpit.DOCKING_RANGE)
+        return dict(combat=bool(self.mode in COCKPIT_MODES and (self.enemy is not None or self.enemy_shot or self.alarm)),
+                    # Herbert's guidance is on the message line; only his first call lights Comms.
+                    comms=self.comms.needs_you(quiet_senders=('HERBERT',),always=(herbert.CALL_LINE,)),
+                    docking=bool(near or self.dock_clearance > 0))
+
+    def update_middle(self):
+        self.middle.update(self.middle_conditions())
+
     # ---- the communicator panel (5) and the radio voices that land in it
-    def comms_shown(self):
+    def comms_panel_open(self):
+        """The docked side panel is showing."""
         return self.comms_panel and self.mode in COMMS_PANEL_MODES
+
+    def comms_shown(self):
+        """The comms log is on screen where it can be typed into: the docked panel, or the Comms page in flight."""
+        return self.comms_panel_open() or (self.mode in COMMS_PAGE_MODES and self.middle.page == 'comms')
 
     def comms_typing_now(self):
         return self.comms_typing and self.comms_shown()
@@ -3806,12 +4323,12 @@ class Game:
         if message.get('sender_name') == 'YOU': return (135,175,185)
         return DIRECT_COLOR if message.get('channel') == 'direct' else GREEN
 
-    def panel_button(self, x, y, w, label, action):
+    def panel_button(self, x, y, w, label, action, into=None):
         d = self.d
         d.fill(x,y,w,24,(13,35,46))
         d.rect(x,y,w,24,(55,125,135))
         d.text(x+6,y+1,label,GREEN)
-        self.panel_buttons.append((x,y,w,24,action))
+        (self.panel_buttons if into is None else into).append((x,y,w,24,action))
 
     def quick_reply(self, text):
         self.transmit(text)
@@ -3831,7 +4348,7 @@ class Game:
         d.text(word_x,y+30,word,RED if self.comms_priority in ('distress','urgency') else GOLD if self.comms_priority == 'safety' else (135,175,185))
         self.panel_buttons.append((word_x-4,y+28,len(word)*11+8,24,self.cycle_comms_priority))   # click it to step on, like P
         d.line(x+8,y+56,x+w-8,y+56)
-        top,bottom,step = y+62,y+h-154,22
+        top,bottom,step = y+62+self.draw_herbert_controls(x,y+60),y+h-154,22
         rows = []
         for message in view['messages'][-COMMS_PANEL_LINES:]:
             color = self.comms_color(message)
@@ -3974,6 +4491,9 @@ class Game:
         def note(text): rows.append(dict(text=text,actions=[],head=False))
         def clean(value, limit=24): return ''.join(c for c in value if c.isprintable())[:limit] if type(value) is str else '?'
         contacts = [c for c in view['contacts'] if comms_number(c.get('number'))]
+        if self.tutor.can_call():
+            head('ON THE RADIO')
+            rows.append(dict(text='HERBERT  old hauler, on the radio',actions=[('Call',self.call_herbert)]))
         head('CONTACTS')
         for c in contacts:
             number,name = c['number'],clean(c.get('name'))
@@ -4177,9 +4697,8 @@ class Game:
         for message in calls[:8]: rows += [(row,RED) for row in self.comms_rows(message,COMMS_PAGE_WRAP)]
         for i,(row,color) in enumerate(rows[:max(0,(575-(y+40))//22)]): d.text(45,y+40+i*22,row,color)
 
-    def draw_comms_strip(self, items, right):
+    def draw_comms_strip(self, items, right, x=28, y=STRIP_Y):
         """Direct, distress and urgency messages from the last few seconds, newest first, on one line."""
-        x = 28
         for message in reversed(items):
             sender = message.get('sender_name') if type(message.get('sender_name')) is str else ''
             text = message.get('text') if type(message.get('text')) is str else ''
@@ -4187,7 +4706,7 @@ class Game:
             room = (right-x)//TICKER_CHAR
             if room < 12: break
             line = line[:room]
-            self.d.text(x,STRIP_Y,line,self.comms_color(message))
+            self.d.text(x,y,line,self.comms_color(message))
             x += (len(line)+3)*TICKER_CHAR
 
     def toggle_feedback(self):
@@ -4476,6 +4995,7 @@ class Game:
                 return
             if k == ord('n'):
                 self.p = Pilot()
+                self.tutor.intro_closed()   # the new commander gets Herbert's call again
                 self.shield = 100
                 self.mode = 'market'
                 self.save()
@@ -4621,6 +5141,7 @@ class Game:
             self.message = 'Fine steering ON: arrows and roll at 20%.' if self.fine_control else 'Normal steering.'
         if k == ord('y'):
             self.course_assist = not self.course_assist
+            self.guidance_fresh = self.course_assist   # the first update refuses a target behind, the station too
             self.autodock = False
             if self.course_assist:
                 self.message = 'Approach guidance ON. You control throttle and roll; request docking clearance.'
@@ -4640,7 +5161,9 @@ class Game:
             if self.p.deep_space: self.message = 'No station in deep space.'
             elif 'docking' not in self.p.equipment: self.message = 'Buy a docking computer in outfitting (U).'
             elif self.enemy: self.message = 'Clear hostile contact before auto-docking.'
-            elif not 65 < self.station[2] <= 2500: self.message = 'Docking computer range: 2500 m.'
+            elif self.docking_port()[2][2] <= 65 and stations.approach_angle(self.docking_port()[1]) > stations.APPROACH_CONE:
+                self.message = 'Docking computer: line up with a port first (within 30°).'
+            elif not 65 < self.docking_port()[2][2] <= 2500: self.message = 'Docking computer range: 2500 m.'
             elif not self.docking_permitted(): self.message = 'Docking refused: wanted status.'
             else:
                 self.course_assist = False
@@ -4691,6 +5214,7 @@ class Game:
         w = self.p.waypoint
         self.nav = 'course'
         self.message = f'Course locked: {w["name"]} ({w["position"][0]:.2f}, {w["position"][1]:.2f}).'
+        self.herbert_event('course')
         if self.mode in ('market','outfit') or (self.mode == 'map' and self.map_return in ('market','outfit')): self.save()
 
     def map_edit(self, key):
@@ -4785,6 +5309,7 @@ class Game:
             destination = trip['destination']
             self.arrive(destination['position'],destination['system'])
             self.message = 'Cruise complete. Arrived at '+destination['name']+'.'
+            if destination['system'] is not None: self.herbert_event('jumped')   # another system reached, as by a jump
 
     def arrive(self, position, system, from_hyperspace=False):
         self.p.position = list(position)
@@ -4800,6 +5325,7 @@ class Game:
             # Hyperspace drops you outside the patrol zone, where pirates can be waiting.
             depth = PATROL_RADIUS+random.uniform(800,2000) if from_hyperspace else 2200.
             self.station = [random.uniform(-80,80),random.uniform(-50,50),depth]
+            self.station_axis = unit_vector(self.station)
         name = SYSTEMS[system][0] if system is not None else f'Deep space ({position[0]:.2f}, {position[1]:.2f})'
         self.arrival = dict(name=name,remaining=5.)
 
@@ -4960,7 +5486,7 @@ class Game:
                 # fixed in the world frame so turning the ship moves the bearing.
                 bearing = (delta[0]*10000,0.,-delta[1]*10000)
                 return [sum(bearing[i]*self.world_basis[i][j] for i in range(3)) for j in range(3)],w['name']+' / COURSE'
-            if not self.p.deep_space: return self.station,w['name']+' / STATION'
+            if not self.p.deep_space: return self.station_beacon(),w['name']+' / PORT '+self.active_port()
             return [0.,0.,500.],w['name']+' / ARRIVED'
         if self.nav == 'asteroid':
             objects = self.fragments or self.asteroids
@@ -4970,12 +5496,33 @@ class Game:
         if self.nav == 'sun': return self.sun,'SUN'
         if self.nav == 'planet' and not self.p.deep_space: return self.planet,SYSTEMS[self.p.system][0].upper()
         if self.p.deep_space: return None,'DEEP SPACE'
-        return self.station,'STATION'
+        return self.station_beacon(),'STATION / PORT '+self.active_port()
+
+    def guidance_lining_up(self):
+        """True while Y guidance on the station is flying out to the port's axis first (outside its approach cone)."""
+        if self.p.deep_space or not self.active_navigation()[1].startswith('STATION / PORT'): return False
+        _,port,_ = self.docking_port()
+        return stations.approach_angle(port) > stations.APPROACH_CONE
+
+    def guidance_aim(self, target, label):
+        """Where Y guidance turns the nose. For anything but the station, the target itself. For the station, a
+        point on the active port's axis: from outside the approach cone, at least 300 m out (as the docking computer
+        flies), to line you up first; inside it, halfway between you and the port, which glides you onto the axis
+        as you close (the slot is 12 m across). Head on, that point is straight ahead of the port, as before."""
+        if not label.startswith('STATION / PORT'): return list(target[:3])
+        _,port,(_,_,out) = self.docking_port()
+        ahead = max(out,300.) if self.guidance_lining_up() else max(out,0.)*.5
+        return [c+o*ahead for c,o in zip(port['position'],port['outward'])]
+
+    def station_beacon(self):
+        """Where the STATION beacon points: the active (nearer) port's centre, so the marker, bearing, scanner and
+        Y guidance bring you to the port you can dock at, never through the tube to the far one."""
+        return list(stations.ports(self.station,self.station_axis)[self.active_port()]['position'])
 
     def scanner_contacts(self):
         contacts = []
         if not self.p.deep_space:
-            contacts += [('station',self.station,'STATION',GREEN),('planet',self.planet,SYSTEMS[self.p.system][0],(100,170,255))]
+            contacts += [('station',self.station_beacon(),'STATION',GREEN),('planet',self.planet,SYSTEMS[self.p.system][0],(100,170,255))]
         ship = self.disabled_ship
         if ship and (ship.get('detected',True) or 'dsc' in self.p.equipment):
             contacts.append(('disabled',ship['object'],'DISABLED SHIP' if ship.get('detected',True) else 'DSC '+ship['ident'],GOLD))
@@ -5021,7 +5568,7 @@ class Game:
         x,_,z = self.camera_vector(obj)
         # Fixed radius (2.5 km, or 25 km on the long-range scanner). Contacts beyond it sit at its rim.
         scale = max(self.effective_radar_range(),math.hypot(x,z))
-        return 955+x/scale*85,165-z/scale*53
+        return RADAR_CX+x/scale*85,RADAR_CY-z/scale*53
 
     def click(self, x, y):
         # The story window and the ticker come first. They change no game state, so they work while an inbox job blocks input.
@@ -5030,8 +5577,9 @@ class Game:
             self.story_click(x,y)
             return
         if self.inbox_blocks_input(): return
+        if self.herbert_panel_click(x,y): return
         px,py,pw,ph = COMMS_PANEL
-        if self.comms_shown() and px <= x < px+pw and py <= y < py+ph:
+        if self.comms_panel_open() and px <= x < px+pw and py <= y < py+ph:
             for bx,by,w,h,action in self.panel_buttons:
                 if bx <= x < bx+w and by <= y < by+h: return action()
             if y >= py+ph-60: self.start_comms_typing()   # the type line
@@ -5051,7 +5599,8 @@ class Game:
                 self.cursor_mode = True
             self.lock_waypoint()
             return
-        if self.mode != 'flight' or not (840 <= x <= 1070 and 80 <= y <= 245): return
+        left,top,width,height = cockpit.RADAR
+        if self.mode != 'flight' or not (left <= x <= left+width and top <= y <= top+height): return
         choices = []
         for kind,obj,label,color in self.scanner_contacts():
             sx,sy = self.scanner_position(obj)
@@ -5071,54 +5620,75 @@ class Game:
             self.message = label+' beacon selected.'
 
     def draw_marker(self, obj, label, color):
+        """A navigation or target marker: a box on the object while it is well inside the canopy, else an arrow on
+        the canopy's edge pointing the way to turn. Labels are kept inside the canopy."""
         d = self.d
+        left,top,width,height = cockpit.VIEW
+        right,bottom = left+width,top+height
+        cx,cy = cockpit.VIEW_CENTRE
+        def place(text, x, y):
+            d.text(max(left+6,min(right-6-len(text)*11,x)),max(top+28,min(bottom-50,y)),text,color)
         vx,vy,vz = self.camera_vector(obj)
         projected = self.project(obj)
-        if projected and 55 <= projected[0] <= PANEL_W-55 and 110 <= projected[1] <= 510:
+        if projected and left+30 <= projected[0] <= right-30 and top+45 <= projected[1] <= bottom-45:
             x,y,_ = projected
             d.fill(x-3,y-3,7,7,color)
             d.rect(x-10,y-10,20,20,color)
-            d.text(max(35,min(PANEL_W-330,x+16)),max(105,min(515,y-10)),label[:28],color)
+            place(label[:28],x+16,y-10)
             return
         if projected:
-            dx,dy = projected[0]-PANEL_W/2,projected[1]-330
+            dx,dy = projected[0]-cx,projected[1]-cy
         else:
             dx,dy = vx,vy
             if abs(dx)+abs(dy) < 1: dx,dy = 0,1
         length = math.hypot(dx,dy)
         if length < 1: dx,dy,length = 0,1,1
         dx,dy = dx/length,dy/length
-        limit = min(490/max(abs(dx),.0001),190/max(abs(dy),.0001))
-        x,y = PANEL_W/2+dx*limit,330+dy*limit
+        limit = min((width/2-30)/max(abs(dx),.0001),(height/2-34)/max(abs(dy),.0001))
+        x,y = cx+dx*limit,cy+dy*limit
         bx,by = x-dx*18,y-dy*18
         d.line(x,y,bx-dy*8,by+dx*8,color)
         d.line(x,y,bx+dy*8,by-dx*8,color)
         d.line(bx-dy*8,by+dx*8,bx+dy*8,by-dx*8,color)
-        text = label+(' / BEHIND: 4' if vz <= 0 else '')
-        d.text(max(35,min(PANEL_W-350,x-140)),max(102,min(515,y+14)),text[:34],color)
+        place((label+(' / BEHIND: 4' if vz <= 0 else ''))[:34],x-140,y+14)
+
+    def panel_box(self, rect, edge=PANEL_EDGE):
+        x,y,w,h = rect
+        self.d.fill(x,y,w,h,PANEL_FILL)
+        self.d.rect(x,y,w,h,edge)
+
+    def panel_bar(self, x, y, w, fraction, color, h=8):
+        """A gauge bar: an outline w wide, filled to fraction (0 to 1)."""
+        self.d.rect(x,y,w,h,PANEL_EDGE)
+        fill = int(max(0,min(1,fraction))*(w-2))
+        if fill > 0: self.d.fill(x+1,y+1,fill,h-2,color)
 
     def draw_heat_instrument(self):
         d = self.d
+        x0,y0,w,h = cockpit.HEAT
+        self.panel_box(cockpit.HEAT)
         color = RED if self.heat >= 90 else GOLD if self.heat >= 70 else GREEN
-        near_sun = self.sun_altitude() < 2000
-        ore = None if near_sun else self.ore_status()
-        tall = near_sun or ore
-        d.fill(840,430,230,130 if tall else 82,(5,16,27))
-        d.rect(840,430,230,130 if tall else 82,(45,105,115))
-        d.text(850,435,f'HEAT {self.heat:.0f}% / LIMIT 90',color)
-        d.text(850,458,f'SHIELDS {self.shield:.0f}%',color)
-        d.rect(850,490,210,8,(45,105,115))
-        d.fill(851,491,int(min(120,self.heat)/120*208),6,color)
-        d.line(850+210*90/120,487,850+210*90/120,501,GOLD)
-        if near_sun:
-            altitude = self.sun_altitude()
+        d.text(x0+10,y0+4,f'HEAT {self.heat:.0f}% / LIMIT 90'[:21],color)
+        d.text(x0+10,y0+25,f'SHIELDS {self.shield:.0f}%',color)
+        bar = w-20
+        d.rect(x0+10,y0+52,bar,8,PANEL_EDGE)
+        d.fill(x0+11,y0+53,int(min(120,max(0,self.heat))/120*(bar-2)),6,color)
+        d.line(x0+10+bar*90/120,y0+49,x0+10+bar*90/120,y0+63,GOLD)
+        if self.mode != 'flight': return
+        altitude = self.sun_altitude()
+        if altitude < 2000:
             state,label = self.scoop_status()
-            d.text(850,510,'INSIDE THE SUN' if altitude < 0 else f'SUN ALTITUDE {altitude:.0f} m',RED if altitude < 0 else GOLD)
-            d.text(850,533,label,GREEN if state == 'collecting' else (120,140,150) if state == 'none' else GOLD)
-        elif ore:
+            d.text(x0+10,y0+67,'INSIDE THE SUN' if altitude < 0 else f'SUN ALTITUDE {altitude:.0f} m'[:21],RED if altitude < 0 else GOLD)
+            d.text(x0+10,y0+89,label[:21],GREEN if state == 'collecting' else DIM if state == 'none' else GOLD)
+            return
+        ore = self.ore_status()
+        if ore:
             distance,label,ready = ore
-            d.text(850,510,f'ORE {distance:.0f} m',GOLD)
-            d.text(850,533,label,GREEN if ready else GOLD)
+            d.text(x0+10,y0+67,f'ORE {distance:.0f} m',GOLD)
+            d.text(x0+10,y0+89,label[:21],GREEN if ready else GOLD)
+            return
+        d.text(x0+10,y0+67,f'SUN {altitude/1000:,.0f} km'[:21],DIM)
+        d.text(x0+10,y0+89,self.scoop_status()[1][:21],DIM)
 
     def ore_status(self):
         """The nearest loose ore or canister and what the scoops need to collect it (None if nothing is loose)."""
@@ -5133,48 +5703,51 @@ class Game:
 
     def draw_scanner(self):
         d = self.d
-        d.fill(840,80,230,165,(5,16,27))
-        d.rect(840,80,230,165,(45,105,115))
-        d.text(850,85,f'RADAR {self.effective_radar_range()/1000:g}km '+('AFT' if self.rear_view else 'FWD'),GREEN)
-        if 'lrscan' in self.p.equipment: self.mouse_button(1020,82,48,'RNG',action=self.toggle_radar_range)
-        d.line(870,165,1040,165,(35,75,85))
-        d.line(955,112,955,218,(35,75,85))
-        d.line(950,171,955,160,(235,245,250))
-        d.line(955,160,960,171,(235,245,250))
-        d.text(920,105,'AHEAD',GREEN)
-        d.text(920,203,'BEHIND',GREEN)
+        x0,y0,w,h = cockpit.RADAR
+        cx,cy = RADAR_CX,RADAR_CY
+        self.panel_box(cockpit.RADAR)
+        d.text(x0+10,y0+5,f'RADAR {self.effective_radar_range()/1000:g}km '+('AFT' if self.rear_view else 'FWD'),GREEN)
+        d.line(cx-85,cy,cx+85,cy,(35,75,85))
+        d.line(cx,cy-53,cx,cy+53,(35,75,85))
+        d.line(cx-5,cy+6,cx,cy-5,(235,245,250))
+        d.line(cx,cy-5,cx+5,cy+6,(235,245,250))
+        d.text(cx-35,cy-60,'AHEAD',GREEN)
+        d.text(cx-35,cy+38,'BEHIND',GREEN)
+        if self.mode != 'flight':
+            d.text(x0+10,y0+170,'IN TRANSIT',DIM)
+            return
         if 'scanner' in self.faults:
             for _ in range(14):
-                d.fill(random.randint(860,1048),random.randint(112,214),3,2,(70,90,95))
-            d.text(890,150,'SCANNER FAULT',RED)
+                d.fill(random.randint(cx-95,cx+93),random.randint(cy-53,cy+49),3,2,(70,90,95))
+            d.text(cx-71,cy-15,'SCANNER FAULT',RED)
         else:
             for kind,obj,label,color in self.scanner_contacts():
                 x,y = self.scanner_position(obj)
                 d.fill(x-3,y-3,6,6,color)
                 if kind in ('ship','disabled','player','trader') and obj is self.ship_target: d.rect(x-7,y-7,14,14,GOLD)
-        d.text(850,224,self.radar_readout(),(135,175,185))
-        self.draw_bearing()
+        d.text(x0+10,y0+170,self.radar_readout()[:(w-20)//11],DIM)
 
     def draw_bearing(self):
         d = self.d
-        d.fill(840,255,230,160,(5,16,27))
-        d.rect(840,255,230,160,(45,105,115))
-        d.text(850,260,'TARGET BEARING',GOLD)
-        d.line(885,340,1025,340,(45,105,115))
-        d.line(955,290,955,385,(45,105,115))
-        d.rect(949,334,12,12,GREEN)
+        x0,y0,w,h = cockpit.BEARING
+        cx,cy = x0+w//2,y0+60
+        self.panel_box(cockpit.BEARING)
+        d.text(x0+10,y0+5,'TARGET BEARING',GOLD)
+        d.line(cx-70,cy,cx+70,cy,PANEL_EDGE)
+        d.line(cx,cy-30,cx,cy+30,PANEL_EDGE)
+        d.rect(cx-6,cy-6,12,12,GREEN)
         if 'bearing' in self.faults:
-            d.text(875,325,'BEARING OFFLINE',RED)
+            d.text(cx-82,cy-10,'BEARING OFFLINE',RED)
             return
         obj,label = (self.ship_target,'SHIP') if self.ship_target is not None else self.active_navigation()
         if obj is None: return
         x,y,z = self.camera_vector(obj)
         length = max(1,math.sqrt(x*x+y*y+z*z))
-        px,py = 955+x/length*65,340+y/length*40
+        px,py = cx+x/length*70,cy+y/length*26
         d.fill(px-4,py-4,8,8,GOLD)
         direction = ('RIGHT' if x > length*.03 else 'LEFT' if x < -length*.03 else '')
         direction += (' DOWN' if y > length*.03 else ' UP' if y < -length*.03 else '')
-        d.text(850,390,'BEHIND: 4' if z < 0 else ('TURN '+direction.strip() if direction.strip() else 'ON HEADING'),GOLD)
+        d.text(x0+10,y0+94,'BEHIND: 4' if z < 0 else ('TURN '+direction.strip() if direction.strip() else 'ON HEADING'),GOLD)
         # Positive cockpit Y is downward, matching the view and arrow keys.
 
     def update_jump_charge(self, dt):
@@ -5199,22 +5772,24 @@ class Game:
         self.message = 'Hyperspace transit to '+charge['destination']['name']+'.'
 
     def draw_hyperspace(self):
+        """The jump's star streaks and destination, inside the canopy."""
         d = self.d
         elapsed = self.jump_warp['elapsed']
+        cx,cy = cockpit.VIEW_CENTRE
         clip = bind(d.sdl,'SDL_RenderSetClipRect',C.c_int,[C.c_void_p,C.c_void_p])
-        viewport = (C.c_int*4)(25,65,PANEL_W-50,640)
-        clip(d.r,viewport)
+        clip(d.r,(C.c_int*4)(*cockpit.VIEW))
         for i,star in enumerate(self.stars):
             angle = math.atan2(star[1],star[0])
             progress = ((i/len(self.stars))+elapsed*1.1)%1
-            radius = 20+progress*progress*850
-            tail = max(10,radius-(30+progress*180))
+            radius = 20+progress*progress*600
+            tail = max(10,radius-(30+progress*130))
             c,s = math.cos(angle),math.sin(angle)
-            d.line(550+c*tail,345+s*tail,550+c*radius,345+s*radius,(100,180+int(progress*65),230))
+            d.line(cx+c*tail,cy+s*tail,cx+c*radius,cy+s*radius,(100,180+int(progress*65),230))
         clip(d.r,None)
-        d.fill(240,285,620,88,(4,9,18))
-        d.text(420,300,'H Y P E R S P A C E',GREEN)
-        d.text(300,338,'Destination: '+self.jump_warp['destination']['name'],GOLD)
+        d.fill(cx-310,cy-44,620,88,(4,9,18))
+        d.text(cx-104,cy-30,'H Y P E R S P A C E',GREEN)
+        text = ('Destination: '+self.jump_warp['destination']['name'])[:54]
+        d.text(cx-len(text)*11//2,cy+6,text,GOLD)
 
     def sun_altitude(self):
         return math.sqrt(sum(v*v for v in self.sun))-SUN_RADIUS
@@ -5282,18 +5857,21 @@ class Game:
             x,z,roll = -x,-z,-roll
         if z <= 5: return None
         c,s = math.cos(roll), math.sin(roll)
-        return PANEL_W/2+(x*c+y*s)*500/z, 330+(-x*s+y*c)*500/z, 500/z
+        cx,cy = cockpit.VIEW_CENTRE
+        scale = cockpit.VIEW_SCALE/z
+        return cx+(x*c+y*s)*scale, cy+(-x*s+y*c)*scale, scale
 
     def on_target(self, obj, radius=32):
         projected = self.project(obj)
-        return projected is not None and abs(projected[0]-PANEL_W/2) < radius and abs(projected[1]-330) < radius
+        cx,cy = cockpit.VIEW_CENTRE
+        return projected is not None and abs(projected[0]-cx) < radius and abs(projected[1]-cy) < radius
 
     def turn_world(self, yaw, pitch):
         # Rotate every relative vector by the inverse cockpit turn. This
         # preserves ranges: steering changes heading rather than strafing.
         c,s = math.cos(self.roll),math.sin(self.roll)
         cy,sy,cp,sp = math.cos(yaw),math.sin(yaw),math.cos(pitch),math.sin(pitch)
-        objects = [self.station,self.sun,self.planet] + self.world_basis + self.stars + self.asteroids + self.fragments + self.mine_objects + [t['object'] for t in self.traffic]
+        objects = [self.station,self.station_axis,self.sun,self.planet] + self.world_basis + self.stars + self.asteroids + self.fragments + self.mine_objects + [t['object'] for t in self.traffic]
         if self.enemy: objects.append(self.enemy)
         if self.enemy_shot: objects.append(self.enemy_shot['position'])
         if self.disabled_ship: objects.append(self.disabled_ship['object'])
@@ -5304,6 +5882,7 @@ class Game:
             x,z = x*cy-z*sy,x*sy+z*cy
             y,z = y*cp-z*sp,y*sp+z*cp
             obj[0],obj[1],obj[2] = x*c-y*s,x*s+y*c,z
+        self.station_axis[:] = unit_vector(self.station_axis)
 
     def move_world(self, dx, dy, dz):
         for obj in [self.station,self.sun,self.planet] + ([self.enemy_shot['position']] if self.enemy_shot else []) + ([self.disabled_ship['object']] if self.disabled_ship else []) + self.asteroids + self.fragments + self.mine_objects + [t['object'] for t in self.traffic] + [e['position'] for e in self.explosions] + [m['position'] for m in self.missiles_in_flight]:
@@ -5332,6 +5911,7 @@ class Game:
                 self.p.jumps += 1
                 self.arrive(destination['position'],destination['system'],from_hyperspace=True)
                 self.message = 'Arrived at '+destination['name']+'.'
+                self.herbert_event('jumped')
             return
         if self.mode == 'cruise':
             self.update_cruise(dt)
@@ -5348,6 +5928,7 @@ class Game:
                     self.dock_clearance = 120
                     self.message = 'Docking clearance granted for 120 seconds.'
                     self.radio('STATION CONTROL')
+                    self.herbert_event('clearance')
                 else: self.message = 'Docking clearance refused: wanted status.'; self.radio('STATION CONTROL','safety')
         if self.breakdown_in is not None:
             self.breakdown_in -= dt
@@ -5385,14 +5966,38 @@ class Game:
             self.autodock = False
             self.message = 'Hostile contact: docking computer disengaged.'
         if self.autodock:
-            x,y,z = self.station
-            limit = 80*dt/mass
-            dx,dy = max(-limit,min(limit,x*dt*2/mass)),max(-limit,min(limit,y*dt*2/mass))
+            _,port,(_,_,z) = self.docking_port()
+            position,outward = port['position'],port['outward']
+            lined_up = stations.approach_angle(port) <= AUTODOCK_CONE
+            if lined_up:
+                # On the approach: nose on the port, strafe onto its axis line (the point level with us), close in.
+                look = position
+                x,y,_ = [c+o*z for c,o in zip(position,outward)]
+            else:
+                # Off to the side: first fly out to the axis, at least 300 m in front of the port. The path stays
+                # in front of the port's face, clear of the hull.
+                look = [c+o*max(z,300.) for c,o in zip(position,outward)]
+            # Turn the nose with the player's own turning path (as approach guidance does).
+            lx,ly,lz = look
+            c,s = math.cos(self.roll),math.sin(self.roll)
+            lx,ly = lx*c+ly*s,-lx*s+ly*c
+            turn = self.handling()
+            yaw_error,pitch_error = math.atan2(lx,lz),math.atan2(ly,math.hypot(lx,lz))
+            if not self.broken_down and self.p.fuel > 0:
+                self.turn_world(max(-.65*dt/mass*turn,min(.65*dt/mass*turn,yaw_error)),max(-.5*dt/mass*turn,min(.5*dt/mass*turn,pitch_error)))
+            facing = abs(yaw_error) < .05 and abs(pitch_error) < .05
             self.roll += max(-dt/mass,min(dt/mass,self.slot_error()))
-            desired = min(70/mass,max(12,(z-60)*0.22))
-            if z < 150: desired = 12
+            limit = 80*dt/mass
+            if lined_up:
+                dx,dy = max(-limit,min(limit,x*dt*2/mass)),max(-limit,min(limit,y*dt*2/mass))
+                desired = min(70/mass,max(12,(z-60)*0.22))
+                if z < 150: desired = 12
+                if z < 130 and (abs(x)>12 or abs(y)>5 or abs(self.slot_error())>0.12): desired = 0
+            else:
+                dx,dy = 0.,0.
+                desired = min(70/mass,max(12,math.sqrt(sum(v*v for v in look))*.2))
+            if not facing: desired = 0   # only close in once the nose is on the mark
             if self.dock_clearance <= 0: desired = 0
-            if z < 130 and (abs(x)>12 or abs(y)>5 or abs(self.slot_error())>0.12): desired = 0
             self.speed += max(-70*dt/mass,min(70*dt/mass,desired-self.speed))
         else:
             self.speed = max(-60/mass,min(180/mass+self.assist_speed,self.speed+((ord('w') in self.keys)-(ord('s') in self.keys))*70*dt/mass))
@@ -5407,11 +6012,14 @@ class Game:
         if self.course_assist and not self.autodock:
             target,label = self.active_navigation()
             remote = self.nav == 'course' and self.p.waypoint and galactic_distance(self.p.position,self.p.waypoint['position']) > .001
-            if target is None or remote or target[2] <= 0:
+            # Y will not engage on a target behind you. Once on, the station's port is never 'behind': lining up on
+            # its axis swings the port out past the side, and guidance then turns you back onto it.
+            fresh,self.guidance_fresh = self.guidance_fresh,False
+            if target is None or remote or (target[2] <= 0 and (fresh or not label.startswith('STATION / PORT'))):
                 self.course_assist = False
                 self.message = 'Guidance unavailable: use H/T for a galaxy course, or select a local target ahead.'
             else:
-                x,y,z = target[:3]
+                x,y,z = self.guidance_aim(target,label)
                 c,s = math.cos(self.roll),math.sin(self.roll)
                 x,y = x*c+y*s,-x*s+y*c
                 turn = self.handling()
@@ -5439,10 +6047,12 @@ class Game:
             self.enemy[2] -= dz
         self.ship_collisions(ship_previous)
         if self.mode == 'dead': return
-        if self.station[2] <= 65 and math.hypot(*self.station[:2]) < 110 and self.station[2] > -100:
+        _,port,(px,py,pz) = self.docking_port()
+        if pz <= 65 and math.hypot(px,py) < 110 and pz > -100:
             if self.docking_safe(): self.dock(); return
             self.damage(5+abs(self.speed)*.2 if abs(self.speed) <= 25 else 35+abs(self.speed)*.7)
-            self.station[2] = 130
+            # Bounce back to 130 m out in front of the port.
+            for i in range(3): self.station[i] -= (130-pz)*port['outward'][i]
             self.speed = 0
             self.autodock = False
             self.course_assist = False
@@ -5612,6 +6222,7 @@ class Game:
         """Trade with the station and tell the market (shared online) about the stock change."""
         stock = self.p.stock[self.p.system]
         before = stock[good]
+        held = self.p.cargo[good]
         value = self.trade_quote(good,buy)
         result = self.p.trade(good,buy,value=value,**options)
         if stock[good] != before:
@@ -5623,6 +6234,12 @@ class Game:
                 self.market_client.queue_trade(self.p.system,good,stock[good]-before)
                 if good in ILLEGAL and not buy: self.report_contraband(delivered=(good,stock[good]-before))
             if buy and not options.get('use_crymto'): result += self.resale_hint(good,value)
+        if self.p.cargo[good] != held:
+            if buy: self.herbert_event('bought')
+            else:
+                self.sale_profit += self.p.trade_log[-1].get('profit',0) if self.p.trade_log else 0
+                self.sale_pending = True
+                if self.p.cargo[good] == 0 or sum(self.p.cargo) == 0: self.herbert_report_sales()
         return result
 
     def resale_hint(self, good, paid):
@@ -5949,19 +6566,21 @@ class Game:
         else: self.message = f'Asteroid vaporised: the {weapon} laser left nothing to scoop. A mining laser cuts it cleanly.'
 
     def laser_hit_depth(self, obj, kind):
+        if kind == 'station':
+            # The ray straight out of the nose (or the tail, in the rear view) against the station's 3D outline:
+            # its hull, both ports' ends, rings, domes and fins. Shots through the open space miss.
+            return stations.ray_hit(self.station_kind(),obj[:3],self.station_axis,self.station_angle,
+                                    (0.,0.,-1.) if self.rear_view else (0.,0.,1.))
         point = self.project(obj)
         if point is None: return None
         sx,sy,scale = point
         angle = self.roll if self.rear_view else -self.roll
-        if kind == 'station':
-            angle += -self.station_angle if self.rear_view else self.station_angle
-            vertices = [(math.cos(i*math.pi/4)*100,math.sin(i*math.pi/4)*100) for i in range(8)]
-        elif kind in ('ship','disabled','player','trader'):
+        if kind in ('ship','disabled','player','trader'):
             vertices = [(-65,10),(-20,-15),(0,-5),(20,-15),(65,10),(0,28)]
         else:
             vertices = [(math.cos(i*2*math.pi/7)*42*(.85+.15*(i%3)),math.sin(i*2*math.pi/7)*42) for i in range(7)]
         # Test the central laser ray against the same outline drawn on screen.
-        x,y = (PANEL_W/2-sx)/scale,(330-sy)/scale
+        x,y = (cockpit.VIEW_CENTRE[0]-sx)/scale,(cockpit.VIEW_CENTRE[1]-sy)/scale
         c,s = math.cos(angle),math.sin(angle)
         x,y = x*c+y*s,-x*s+y*c
         inside = False
@@ -5997,6 +6616,14 @@ class Game:
         callback = action if action is not None else lambda:self.mouse_key(key,hold)
         self.buttons.append((x,y,w,32,callback))
 
+    def cockpit_button(self, x, y, w, label, action, lit=False):
+        """A cockpit panel's button (30 px high), drawn where it is, wherever that is on the screen."""
+        d = self.d
+        d.fill(x,y,w,30,(13,35,46))
+        d.rect(x,y,w,30,GOLD if lit else (55,125,135))
+        d.text(x+(w-len(label)*11)//2,y+4,label,GOLD if lit else GREEN)
+        self.buttons.append((x,y,w,30,action))
+
     def draw_action_bar(self):
         if not self.footer_actions: return
         d = self.d
@@ -6007,21 +6634,21 @@ class Game:
             if hint and label.endswith(' '+hint): label = label[:-len(hint)-1]
             hint_width = max(30,len(hint)*11+12) if hint else 0
             button_width = max(132,min(330,len(label)*11+24+hint_width))
-            if items and width+10+button_width > PANEL_W-70:
+            if items and width+10+button_width > BOX_W:
                 rows.append(items)
                 items,width = [],0
             items.append((label,hint,callback,button_width,hint_width,hold))
             width += (10 if width else 0)+button_width
         if items: rows.append(items)
         start = 674-(len(rows)-1)*36
-        d.fill(25,start-6 if self.mode != 'flight' else start,PANEL_W-50,710-start+6,(7,19,28))
-        if self.mode != 'flight': d.line(25,start-6,PANEL_W-25,start-6,(35,65,80))
+        d.fill(25,start-6 if self.mode != 'flight' else start,BOX_W+20,710-start+6,(7,19,28))
+        if self.mode != 'flight': d.line(25,start-6,35+BOX_W+10,start-6,(35,65,80))
         for row,items in enumerate(rows):
             x,y = 35,start+row*36
             for index,(label,hint,callback,w,hint_width,hold) in enumerate(items):
                 back = label.lower().startswith(('return','back','cancel','decline','refuse'))
                 danger = 'reset' in label.lower() or 'quit' in label.lower()
-                if back and index == len(items)-1: x = max(x,PANEL_W-35-w)
+                if back and index == len(items)-1: x = max(x,35+BOX_W-w)
                 primary = index == 0 and not back and not danger
                 border = GOLD if primary else RED if danger else (55,95,110)
                 d.fill(x,y,w,32,(15,56,61) if primary else (12,29,40))
@@ -6048,31 +6675,29 @@ class Game:
         self.buttons = list(getattr(self,'comms_page_buttons',[])) if self.mode == 'comms' else []
         self.footer_actions = []
         d = self.d
-        if self.mode not in ('feedback','notes','redeem','rename','menu','prison','intro'):
-            for x,w,label,action in TOP_BAR: self.mouse_button(x,18,w,label,action=getattr(self,action[0]) if len(action) == 1 else (lambda a=action:getattr(self,a[0])(a[1])))
-            section = 'money' if self.mode in ('money','bank','jobs','exchange') else 'vms' if self.mode in ('vms','outfit','engineering') else 'map' if self.mode in ('map','planet_profile') else None
-            if section:
-                x,w = {'map':TOP_BAR[0][:2],'vms':TOP_BAR[1][:2],'money':TOP_BAR[2][:2]}[section]
-                d.rect(x,18,w,32,GOLD)
-            for i,(n,label,lit) in enumerate(RAIL):
-                y = 80+i*44
+        # The top bar: keys 1-9 on every screen, except while typing a name, note, report or code, and in prison
+        # or the introduction (which wait for an answer).
+        if self.mode not in ('feedback','notes','redeem','rename','prison','intro'):
+            y = cockpit.TOP_BAR_Y
+            for x,w,label,n in TOP_BAR:
+                lit = self.mode in TOP_BAR_LIT[n]
                 if n == 5:
                     unread = self.comms.unread()
-                    # The rail button holds 9-10 characters: '5 Comms 3', '5 Comms 9+'.
-                    count = '' if not unread else f' {unread}' if unread < 10 else ' 9+'
-                    self.mouse_button(PANEL_W-8,y,100,label+count,action=lambda:self.open_screen(5))
-                    if self.mode in lit or self.comms_shown(): d.rect(PANEL_W-8,y,100,32,GOLD)
-                    continue
-                self.mouse_button(PANEL_W-8,y,100,label,action=lambda n=n:self.open_screen(n))
-                if self.mode in lit: d.rect(PANEL_W-8,y,100,32,GOLD)
-        modal = self.mode not in ('market','flight','cruise','hyperspace','dead','prison')
-        self.mouse_button(545,18,85,'Back' if modal else 'Quit',action=self.mouse_back)
+                    # The button holds the label and up to three more characters: '5 COMMS 3', '5 COMMS 9+'.
+                    label += '' if not unread else f' {unread}' if unread < 10 else ' 9+'
+                    lit = lit or self.comms_shown()
+                self.mouse_button(x,y,w,label,action=lambda n=n:self.open_screen(n))
+                if lit: d.rect(x,y,w,cockpit.TOP_BAR_H,GOLD)
+        # Back, where a screen has somewhere to go back to; Quit is in the 4 Menu (and Esc saves and closes).
+        if self.mode not in ('market','flight','cruise','hyperspace','dead','prison'):
+            x,y,w = BACK_BUTTON
+            self.mouse_button(x,y,w,'Back',action=self.mouse_back)
         row_y = 674
         if self.mode == 'menu':
             for i,(label,_) in enumerate(self.menu_actions()):
-                x,y = 35+(i%2)*515,200+(i//2)*110
-                self.mouse_button(x,y,490,label,action=lambda i=i:self.choose_menu_action(i))
-                if i == self.menu_selected: d.rect(x-3,y-3,496,38,GOLD)
+                x,y = self.menu_item_position(i)
+                self.mouse_button(x,y,self.MENU_ITEM_W,label,action=lambda i=i:self.choose_menu_action(i))
+                if i == self.menu_selected: d.rect(x-3,y-3,self.MENU_ITEM_W+6,38,GOLD)
             self.mouse_button(35,674,1000,'Return to game',action=self.mouse_back)
         elif self.mode in ('market','outfit'):
             if self.mode == 'market':
@@ -6123,8 +6748,8 @@ class Game:
                     if field != self.pay_field: self.pay_field,self.text_selection_all = field,False
                     if action: action()
                 return run
-            self.buttons.append((35,245,1030,60,on('code')))     # clicking a box types into it
-            self.buttons.append((35,465,1030,60,on('amount')))
+            self.buttons.append((35,245,BOX_W,60,on('code')))     # clicking a box types into it
+            self.buttons.append((35,465,BOX_W,60,on('amount')))
             self.mouse_button(35,315,160,'Paste',action=on('code',lambda:self.handle_clipboard('paste')))
             self.mouse_button(210,315,160,'Copy',action=on('code',lambda:self.handle_clipboard('copy')))
             self.mouse_button(385,315,160,'Select all',action=on('code',lambda:self.handle_clipboard('select_all')))
@@ -6139,6 +6764,7 @@ class Game:
         elif self.mode == 'prison':
             self.mouse_button(35,674,490,'Work a shift W',ord('w'))
             self.mouse_button(550,674,490,'Bribe a guard B',ord('b'))
+            self.mouse_button(35,674,200,'Quit',27,action=self.request_exit)   # saves first, like Esc
         elif self.mode == 'rename':
             self.mouse_button(35,315,160,'Paste',action=lambda:self.handle_clipboard('paste'))
             self.mouse_button(210,315,160,'Select all',action=lambda:self.handle_clipboard('select_all'))
@@ -6168,7 +6794,7 @@ class Game:
             if self.p.dock_job is None:
 
                 for i,label in enumerate(['Cargo handling','Inventory checks','Workshop assistant']):
-                    self.mouse_row(40,150+i*75,1000,55,lambda i=i:self.start_job(i))
+                    self.mouse_row(40,150+i*75,BOX_W-20,55,lambda i=i:self.start_job(i))
                     self.mouse_button(40+i*345,674,330,label,ord('1')+i)
             elif self.p.dock_job['step'] < 5:
                 for i in range(3):
@@ -6205,37 +6831,49 @@ class Game:
             self.mouse_button(735,674,300,'Close channel',action=self.mouse_back)
         elif self.mode == 'distress':
             for i in range(len(self.rescue['offers'])):
-                self.mouse_row(35,169+i*38,1000,38,lambda i=i:self.rescue.update(selected=i))
+                self.mouse_row(35,169+i*38,BOX_W-30,38,lambda i=i:self.rescue.update(selected=i))
             for i,(label,key) in enumerate([('Accept claim',ord('a')),('Negotiate',ord('n')),('Refuse',ord('r'))]): self.mouse_button(50+i*300,row_y,280,label,key)
         elif self.mode == 'engineering':
             for i,(label,key) in enumerate([('Train',ord('t')),('Repair self',ord('r')),('Help target',ord('h')),('Return',ord('8'))]): self.mouse_button(35+i*255,row_y,240,label,key)
         elif self.mode in ('help','updates'):
             if self.mode == 'help':
                 tabs = self.help_sections()
-                step = min(172,1030//len(tabs))   # every tab fits across the screen
+                step = min(172,BOX_W//len(tabs))   # every tab fits across the screen
                 for i,(title,_) in enumerate(tabs):
                     self.mouse_button(35+i*step,137,step-7,title,action=lambda i=i:setattr(self,'help_page',i))
                     if i == self.help_page: self.d.rect(35+i*step,137,step-7,28,GOLD)
             self.mouse_button(40,row_y,160,'Return',ord('1') if self.mode == 'help' else ord('2'))
         elif self.mode == 'cruise':
-            for i,(label,key) in enumerate([('Cancel cruise',ord('t')),('Navigation',ord('g')),('Distress',ord('6'))]): self.mouse_button(50+i*300,row_y,280,label,key)
+            # In the canopy, under the cruise's progress bar.
+            left,top,_,_ = cockpit.VIEW
+            for i,(label,key) in enumerate([('Cancel cruise',ord('t')),('Navigation',ord('g')),('Distress',ord('6'))]):
+                hint = self.key_hint(key)
+                self.mouse_button(left+26+i*205,top+350,190,(label+'  '+hint if hint else label)[:16],key)
         elif self.mode == 'dead':
             self.mouse_button(50,row_y,350,'Recover starter ship',ord('r'))
             self.mouse_button(440,row_y,300,'New pilot / reset',ord('n'))
+            self.mouse_button(780,row_y,200,'Quit',27,action=self.request_exit)   # saves first, like Esc
         if self.mode == 'flight':
-            self.mouse_button(35,674,190,'Flight controls',action=lambda:setattr(self,'mouse_controls',not self.mouse_controls))
+            # The flight controls toggle sits under the ship's outline; RNG on the radar's heading.
+            x,y,w,h = cockpit.SHIP_ICON
+            self.cockpit_button(x+8,y+140,w-16,'Controls',lambda:setattr(self,'mouse_controls',not self.mouse_controls),self.mouse_controls)
+            if 'lrscan' in self.p.equipment:
+                x,y,w,h = cockpit.RADAR
+                self.cockpit_button(x+w-54,y+3,50,'RNG',self.toggle_radar_range)
         if self.mode == 'flight' and self.mouse_controls:
             groups=[('Flight', [('Thrust W',ord('w'),True),('Brake S',ord('s'),True),('Fire Spc',32,True),('Roll L',LEFT,True),('Pitch Up',UP,True),('Roll R',RIGHT,True),('Yaw Q',ord('q'),True),('Pitch Dn',DOWN,True),('Yaw E',ord('e'),True)]),
                 ('Nav',[('Nav 1',ord('g'),False),('Hold jump',ord('h'),True),('Cruise',ord('t'),False),('Station',ord('d'),False),('Planet',ord('p'),False),('Rocks',ord('a'),False),('Sun',ord('j'),False),('Scoop',ord('o'),False),('Guide ON' if self.course_assist else 'Guide',ord('y'),False)]),
                 ('Combat',[('Fire',32,True),('View F',ord('4'),False),('Laser',ord('v'),False),('Missile',ord('m'),False),('Mine',ord('b'),False),('Jammer',ord('z'),False),('Cloak',ord('k'),False),('Target',ord('5'),False)]),
                 ('Safety',[('Pay fine R' if self.can_settle() and not self.surrendering else 'Surrender R' if not self.p.deep_space and self.station_hostilities[self.p.system] and self.arrest_pending() and not self.surrendering else 'Radio R',ord('7'),False),('Hail N',ord('n'),False),('Autodock',ord('c'),False),('Skills',ord('8'),False),('Distress',ord('6'),False),('Fine ON' if self.fine_control else 'Fine ^F',ord('i'),False)])]
-            d.fill(30,105,350,270,(5,16,27));d.rect(30,105,350,270,GREEN)
-            d.text(40,112,'FLIGHT CONTROLS',GOLD)
+            # In the canopy's lower half, between the crosshair and the readout rows, clear of the side panels.
+            ox,oy,ow,oh = CONTROLS_PANEL
+            d.fill(ox,oy,ow,oh,(5,16,27));d.rect(ox,oy,ow,oh,GREEN)
+            d.text(ox+350,oy+8,'FLIGHT CONTROLS',GOLD)
             for i,(title,_) in enumerate(groups):
-                self.mouse_button(40+i*82,145,78,title,action=lambda i=i:setattr(self,'action_tab',i))
-                if i == self.action_tab: d.rect(40+i*82,145,78,28,GOLD)
-            for i,(label,key,hold) in enumerate(groups[self.action_tab][1]): self.mouse_button(40+(i%3)*110,190+(i//3)*45,105,label,key,hold=hold)
-            d.text(40,341,'Hold movement / fire buttons.',(130,175,185))
+                self.mouse_button(ox+10+i*82,oy+4,78,title,action=lambda i=i:setattr(self,'action_tab',i))
+                if i == self.action_tab: d.rect(ox+10+i*82,oy+4,78,28,GOLD)
+            for i,(label,key,hold) in enumerate(groups[self.action_tab][1]): self.mouse_button(ox+10+(i%5)*110,oy+40+(i//5)*36,105,label,key,hold=hold)
+            d.text(ox+10,oy+110,'Hold movement / fire buttons.',(130,175,185))
 
         self.draw_action_bar()
 
@@ -6271,20 +6909,19 @@ class Game:
     def help_sections(self):
         return [
             ('Keys',[
-                ('Screens: the number row','0 to 9','0 Home (market or cockpit), 1 Nav, 2 VMS, 3 Money, 4 Menu, 5 Comms, 6 Logs, 7 Cargo, 8 Engineering, 9 Help. Press again to go back.'),
+                ('Screens: the top bar','1 to 9','1 Nav, 2 VMS, 3 Money, 4 Menu, 5 Comms, 6 Logs, 7 Cargo, 8 Engineering, 9 Help, on every screen. 0 Home. Press again to go back.'),
                 ('Actions: letters','B buy, S sell, D dock...','Letters act on the screen you are on and are named for what they do. Every button shows its key.'),
-                ('Rarer controls','CTRL + letter (^)','Ctrl+0 bug report or suggestion, Ctrl+N quick note, Ctrl+M full screen; in flight Ctrl+P/S/R/U beacons, Ctrl+F fine steering, Ctrl+E distress, Ctrl+L long-range radar. Y (or Ctrl+G) approach guidance; X silences the alarm.'),
-                ('Back and close','BACKSPACE / ESC','Backspace goes back. Esc saves and closes from every screen.'),
-                ('Menu','4 or `','Notes, feedback, updates, display size and save and close.'),
-                ('The Relay ticker','CLICK A STORY','The Sovereign Trade Assembly (STA) sets the trade rules. Click a ticker story for details.'),
-                ('Changed keys','In this update','Screens now run left to right: 0 Home, 1 Nav, 2 VMS, 3 Money, 4 Menu. Feedback moved to Ctrl+0.')]),
+                ('The middle screen','[ ]  AND  \\','[ and ] turn its seven pages. A page that needs you lights red; \\ jumps to it (Combat, Comms, then Docking).'),
+                ('Rarer controls','CTRL + letter (^)','Ctrl+0 feedback, Ctrl+N note, Ctrl+M full screen. In flight Ctrl+P/S/R/U beacons, Ctrl+F fine steering, Ctrl+E distress, Ctrl+L radar.'),
+                ('Back, close and quit','BACKSPACE / ESC','Backspace goes back. Esc saves and closes. Quit (it saves first) is the first item in 4 Menu, with notes, feedback and updates.'),
+                ('The Relay ticker','CLICK A STORY','The Sovereign Trade Assembly (STA) sets the trade rules. Click a ticker story for details.')]),
             ('Quick start',[
                 ('First trade','B / S','Buy food on Halvora. Sell it at an industrial port such as Corvant.'),
-                ('Mouse flight controls','Flight controls','Open the bottom-left panel. Flight, Nav, Combat and Safety group the actions.'),
+                ('Herbert','5 / Ctrl+H','An old hauler appears on screen and offers new pilots a guided first trip. Call him any time in your first three trips.'),
+                ('Mouse flight controls','Controls button','Under the ship outline in the cockpit. Flight, Nav, Combat and Safety group the actions.'),
                 ('Plan a trip','1 / ENTER','Open Nav, choose a planet or coordinate, check fuel, then lock your course.'),
                 ('Leaving the station','L','Request clearance, wait for approval, then launch. Read fuel warnings.'),
-                ('Keep a reserve','2 then F / R','In VMS buy fuel and service the hull while docked. Cargo adds weight and inertia.'),
-                ('Emergency close','ESC / Save/quit','Saves and closes from every screen. In space your saved ship continues unattended.')]),
+                ('Keep a reserve','2 then F / R','In VMS buy fuel and service the hull while docked. Cargo adds weight and inertia.')]),
             ('Flight',[
                 ('Throttle and braking','HOLD W / S','W accelerates. S brakes, then reverses. Heavy cargo makes stopping slower.'),
                 ('Fine steering','CTRL+F + ARROWS','Ctrl+F toggles 20% roll, pitch and rudder. Safety tab has a mouse toggle.'),
@@ -6298,9 +6935,9 @@ class Game:
                 ('Fast travel','HOLD H','Keep holding for the 3-second countdown. Release early to cancel the jump.'),
                 ('Economical travel','T','Cruise uses less fuel but takes time. T cancels at your current coordinates.'),
                 ('Scanner targets','CLICK / TAB','Select a ship. Pink markers track it; edge arrows show off-screen contacts.'),
-                ('Approach guidance','CTRL+G','Toggle centring on a local target ahead. You set speed and roll. Arrows cancel; H/T for galaxy travel.')]),
+                ('Approach guidance','Y OR CTRL+G','Toggle centring on a local target ahead. You set speed and roll. Arrows cancel; H/T for galaxy travel.')]),
             ('Combat',[
-                ('Laser fire','HOLD SPACE','Fire the current view’s fitted laser. Rear view cannot use the front mount.'),
+                ('Laser fire','HOLD SPACE','Fire the current view’s fitted laser. Rear view cannot use the front mount. X silences the alarm.'),
                 ('Choose a laser','V','Cycle front pulse, beam, military or mining lasers you have bought.'),
                 ('Missiles','M','Use one carried homing missile against the hostile contact. Replacements cost credits.'),
                 ('Proximity mines','L','Lay a mine astern. It arms after 1.5 seconds; its blast can hurt you too.'),
@@ -6308,12 +6945,11 @@ class Game:
                 ('Collision danger','KEEP CLEAR','Ships have solid collision hulls. A fast impact damages both ships.')]),
             ('Safety',[
                 ('Docking radio','R','Request station clearance before entry. Wanted pilots may be refused.'),
-                ('Manual docking','LEFT / RIGHT + LOW SPEED','Enter the rotating slot at 1–25. Centre within 14m / 6m; roll within +/-14 degrees.'),
-                ('Automatic docking','D','A fitted docking computer requests clearance and guides the approach.'),
+                ('Manual docking','EITHER PORT, LOW SPEED','A station has a port at each end. Dock at either port within 30 degrees of its axis, at speed 1–25, centred in the slot.'),
+                ('Automatic docking','D','A fitted docking computer requests clearance, turns, lines you up with a port and guides the approach.'),
                 ('Emergency rescue','CTRL+E','Review rescue terms. Nearby stations claim 25%; distant salvagers negotiate.'),
-                ('Communicator','5 / CTRL+5','5 toggles the panel; ENTER types; P sets message priority. Ctrl+5: full page, Distress tab.'),
-                ('Field engineering','8','Repair your ship or a nearby selected disabled ship. Training improves odds.'),
-                ('Repair cooldown','30m, 60m, 120m…','Failed repairs impose real-time waits. Rescue is still available during a cooldown.')]),
+                ('Communicator','5 / CTRL+5','In flight 5 opens the Comms page; ENTER types. Docked, 5 toggles the side panel. Ctrl+5: full page, Distress tab.'),
+                ('Field engineering','8','Repair your ship or a disabled ship. Training improves odds. Failed repairs wait 30m, 60m, 120m…')]),
             ('Station',[
                 ('Market','UP/DOWN  B / S','Click goods or use arrows. Buy and sell prices differ; station stock is finite.'),
                 ('Outfitting','U','Buy modules and ammunition. Availability depends on local technology.'),
@@ -6330,25 +6966,30 @@ class Game:
         d.text(35,78,'PILOT HANDBOOK / '+title.upper(),GOLD)
         d.text(35,105,'Click a tab. LEFT / RIGHT changes page. 9 or Return goes back.')
         for i,(heading,keys,description) in enumerate(cards):
-            x,y=35+(i%2)*530,180+(i//2)*150
-            d.fill(x,y,510,130,(7,23,33));d.rect(x,y,510,130,(35,90,105))
+            w=(BOX_W-20)//2   # two columns of cards across the content area
+            x,y=35+(i%2)*(w+20),180+(i//2)*150
+            d.fill(x,y,w,130,(7,23,33));d.rect(x,y,w,130,(35,90,105))
             d.text(x+15,y+10,heading,GREEN)
             d.text(x+15,y+38,keys,GOLD)
-            for line_index,line in enumerate(textwrap.wrap(description,43)[:3]): d.text(x+15,y+67+line_index*20,line,(160,200,205))
+            for line_index,line in enumerate(textwrap.wrap(description,(w-30)//11)[:3]): d.text(x+15,y+67+line_index*20,line,(160,200,205))
 
     def draw(self):
         d,p = self.d,self.p
-        d.color(d.r,4,9,18,255)
+        d.color(d.r,*SPACE,255)
         d.clear(d.r)
-        d.text(28,20,GAME_NAME.upper(),GREEN)
+        d.text(cockpit.TITLE_X,cockpit.TOP_BAR_Y+4,GAME_NAME.upper(),GREEN)
         self.draw_ticker()
         location = 'In transit' if self.mode == 'hyperspace' else 'Deep space' if p.deep_space or self.mode == 'cruise' else SYSTEMS[p.system][0]
-        economy = '' if p.deep_space or self.mode in ('cruise','hyperspace') else f' / {SYSTEMS[p.system][1]} / Tech {TECH[p.system]}'
-        d.text(640,5,location+economy,GOLD)
-        d.text(640,29,f'CR {p.credits:.0f}  CYM {p.crymto}  KILLS {p.kills}')
-        d.line(25,52,PANEL_W-25,52)
+        economy = '' if p.deep_space or self.mode in ('cruise','hyperspace') else f' / {SYSTEMS[p.system][1]} T{TECH[p.system]}'
+        # The top bar's right end: system, economy and tech, then credits, Crymto and kills (26 characters a line).
+        left,top,width,_ = cockpit.CONTENT
+        room = (left+width-cockpit.STATUS_X)//cockpit.CHAR_W
+        d.text(cockpit.STATUS_X,2,(location+economy)[:room],GOLD)
+        d.text(cockpit.STATUS_X,24,credits_line(p.credits,p.crymto,p.kills,room))
+        d.line(left,top-2,left+width,top-2)
         # One locked snapshot of the comms log a frame, for the page, the panel and the strip.
-        view = self.comms.view() if self.mode in COMMS_PANEL_MODES or self.mode == 'comms' else None
+        view = self.comms.view() if self.mode in COMMS_STRIP_MODES or self.mode == 'comms' else None
+        self.frame_view = view   # the Comms page draws from it too
         if self.mode == 'vms':
             self.draw_vms()
         elif self.mode == 'menu':
@@ -6370,7 +7011,7 @@ class Game:
         elif self.mode == 'rename':
             d.text(35,85,'MENU / COMMANDER NAME',GOLD)
             d.text(45,180,'Type a name (up to 24 characters), then press ENTER or click Save name.')
-            d.rect(35,245,1030,60,GREEN)
+            d.rect(35,245,BOX_W,60,GREEN)
             if self.text_selection_all and self.text_selection_mode == 'rename': d.fill(40,250,max(20,len(p.name)*11+20),42,(20,65,70))
             self.text_cursor(45,265,p.name)
             remote = getattr(self,'remote_save',None)
@@ -6410,6 +7051,7 @@ class Game:
             self.draw_comms_page(view)
         elif self.mode == 'hyperspace':
             self.draw_hyperspace()
+            self.draw_cockpit()
         elif self.mode == 'help':
             self.draw_help()
         elif self.mode == 'updates':
@@ -6475,8 +7117,8 @@ class Game:
                 d.text(35,520,'B or ENTER buys; S sells for half price.')
                 d.text(35,545,'The pulse laser is built in and cannot be sold.',(135,175,185))
             wanted = self.wanted_level()
-            for i,t in enumerate([] if self.comms_shown() else ['COMMANDER STATUS',f'Cmdr  {self.commander_name()[:16]}',f'Rank  {p.rank}',f'Wanted {"*"*wanted}{"-"*(5-wanted)} {wanted}/5',f'Cargo {sum(p.cargo)}/{p.capacity} t',f'Fuel  {p.fuel:.2f}/7',f'Hull  {p.hull:.0f}%',f'Refill {p.fuel_cost()} cr',f'Service {p.service_cost()} cr',f'Mines {p.mines}/4',f'Fine {p.fine} cr',f'Wear {p.maintenance:.0f}%',f'Eng. {p.engineering_level}/5']): d.text(790,130+i*35,t,RED if i == 3 and wanted else GREEN)
-            if p.edited and not self.comms_shown(): d.text(790,130+13*35,'This save was edited',RED); d.text(790,130+14*35,'outside the game.',RED)
+            for i,t in enumerate([] if self.comms_shown() else ['COMMANDER STATUS',f'Cmdr  {self.commander_name()[:16]}',f'Rank  {p.rank}',f'Wanted {"*"*wanted}{"-"*(5-wanted)} {wanted}/5',f'Cargo {sum(p.cargo)}/{p.capacity} t',f'Fuel  {p.fuel:.2f}/7',f'Hull  {p.hull:.0f}%',f'Refill {p.fuel_cost()} cr',f'Service {p.service_cost()} cr',f'Mines {p.mines}/4',f'Fine {p.fine} cr',f'Wear {p.maintenance:.0f}%',f'Eng. {p.engineering_level}/5']): d.text(STATUS_PANEL_X,130+i*35,t,RED if i == 3 and wanted else GREEN)
+            if p.edited and not self.comms_shown(): d.text(STATUS_PANEL_X,130+13*35,'This save was edited',RED); d.text(STATUS_PANEL_X,130+14*35,'outside the game.',RED)
             if self.mode == 'market' and p.charter: d.text(35,562,f'NEWCOMER CHARTER: +50% on sale profit here (max {CHARTER_CAP}/t) to Operator.',(120,220,140))
             elif self.mode == 'market': d.text(35,562,'Ship fuel, service, fitting and engineering: open VMS above.')
             d.text(35,590,'3 Money / station jobs   2 VMS   1 Nav')
@@ -6485,16 +7127,8 @@ class Game:
         elif self.mode == 'map':
             self.draw_map()
         elif self.mode == 'cruise':
-            trip = self.cruise
-            remaining = max(0,trip['duration']-trip['elapsed'])
-            d.text(320,200,'INTERSTELLAR CRUISE',GREEN)
-            d.text(250,255,'Destination: '+trip['destination']['name'])
-            d.text(250,300,f'ETA {int(remaining//60)}m {int(remaining%60)}s    FUEL {p.fuel:.2f}/7')
-            d.text(250,345,f'Coordinates {p.position[0]:.3f}, {p.position[1]:.3f}')
-            d.rect(250,405,600,25)
-            progress = min(1,trip['elapsed']/trip['duration'])
-            for x in range(int(594*progress)): d.line(253+x,409,253+x,426)
-            d.text(250,475,'T cancels at current coordinates. 1 opens map.')
+            self.draw_cruise()
+            self.draw_cockpit()
         elif self.mode == 'bank':
             self.draw_bank()
         elif self.mode == 'dead':
@@ -6506,47 +7140,115 @@ class Game:
             self.draw_flight()
         self.draw_alert()
         self.draw_mouse_ui()
+        if self.mode in COCKPIT_MODES: self.buttons += self.middle_buttons+self.mode_buttons   # the middle screen's, drawn above
         self.draw_story()
-        d.line(25,710,PANEL_W-25,710)
         notice = 'Update '+self.updates.latest+' available - 2' if self.updates.latest else self.message
-        shown = self.comms_shown()
-        strip = view['strip'] if view and self.mode in COMMS_PANEL_MODES else []
-        d.text(28,714 if strip else 725,notice[:69 if shown else 94],GOLD)
-        if strip: self.draw_comms_strip(strip,COMMS_PANEL[0]-10 if shown else W)
+        shown = self.comms_panel_open()
+        strip = view['strip'] if view and self.mode in COMMS_STRIP_MODES else []
+        if self.mode in COCKPIT_MODES:
+            # The cockpit's rows: the status line (whose right part a live comms strip takes), then the message
+            # line at full width (the side panel is never drawn here).
+            right = cockpit.CONTENT[0]+cockpit.CONTENT[2]
+            self.draw_status_line(COCKPIT_STRIP_X-22 if strip else None)
+            for i,line in enumerate(self.message_rows(notice,(right-28)//11)): d.text(28,cockpit.MESSAGE_Y+i*MESSAGE_ROW,line,GOLD)
+            if strip: self.draw_comms_strip(strip,right,COCKPIT_STRIP_X,cockpit.STATUS_Y)
+        else:
+            d.line(cockpit.CONTENT[0],710,cockpit.CONTENT[0]+cockpit.CONTENT[2],710)
+            d.text(28,714 if strip else 725,notice[:69 if shown else 94],GOLD)
+            if strip: self.draw_comms_strip(strip,COMMS_PANEL[0]-10 if shown else W)
         if shown: self.draw_comms_panel(view)
+        self.draw_herbert()
+        self.frame_view = None
         d.present(d.r)
 
+    def status_items(self):
+        """The cockpit's status line, as (text, colour, priority) pieces; the lowest priority goes first when short
+        of room."""
+        p = self.p
+        laser = ('REAR '+p.rear_laser.upper()+' LASER' if 'rear' in p.equipment else 'REAR UNARMED') if self.rear_view else p.laser.upper()+' LASER'
+        items = [(f'SPEED {self.speed:.0f}',GREEN,9),(f'FUEL {p.fuel:.2f}'+(' LOW' if p.fuel < 1 else ''),RED if p.fuel < 1 else GREEN,9),
+                 (laser,GREEN,9),(f'MISSILES {p.missiles}',GREEN,8),(f'MINES {p.mines}',GREEN,5)]
+        if self.cloaked or self.jamming: items.append(('CLOAKED' if self.cloaked else 'JAMMING',GOLD,7))
+        if self.mode == 'flight' and self.in_patrol_zone(): items.append(('PATROL ZONE',GOLD,4))
+        if p.waypoint:
+            w = p.waypoint
+            items.append((f'COURSE {w["name"][:14]} {galactic_distance(p.position,w["position"]):.2f} LY / T cruise',GOLD,6))
+        if p.fuel < 1 and not p.waypoint: items.append(('Buy fuel / skim the sun; Ctrl+E distress',RED,7))
+        else: items.append(('Ctrl+E distress',DIM,3))
+        if self.mode == 'flight': items.append(('F rear view',DIM,1))
+        items.append(('[ ] pages',DIM,2))
+        if self.tutor.can_call(): items.append(('Ctrl+H Herbert',DIM,6))
+        return items
+
+    @staticmethod
+    def message_rows(text, width):
+        """The ship's message, word-wrapped onto at most two rows of width characters; past that it ends in an ellipsis."""
+        rows = textwrap.wrap(text,width) or ['']
+        if len(rows) > 2:
+            rows = [rows[0],rows[1][:width-1].rstrip()+'\u2026']
+        return rows
+
+    def draw_status_line(self, right=None):
+        """The status pieces that fit between the content's left edge and right (default its right edge)."""
+        items = self.status_items()
+        left = cockpit.CONTENT[0]
+        room = ((right or left+cockpit.CONTENT[2])-left)//11
+        while len(items) > 1 and sum(len(t) for t,_,_ in items)+2*(len(items)-1) > room:
+            items.remove(min(items,key=lambda item:item[2]))
+        x = cockpit.CONTENT[0]
+        for text,color,_ in items:
+            self.d.text(x,cockpit.STATUS_Y,text,color)
+            x += (len(text)+2)*11
+
     def draw_flight(self):
+        self.draw_view()
+        self.draw_cockpit()
+
+    def view_label(self, text, x, y, color):
+        """A label in the forward view, kept inside the canopy (a character is 11 px wide)."""
+        left,top,width,height = cockpit.VIEW
+        self.d.text(max(left+6,min(left+width-6-len(text)*11,x)),max(top+24,min(top+height-50,y)),text,color)
+
+    def draw_view(self):
+        """The forward (or rear) view inside the canopy: the 3D scene, the struts, markers and the overlays."""
         d,p = self.d,self.p
+        left,top,width,height = cockpit.VIEW
+        right,bottom = left+width,top+height
+        cx,cy = cockpit.VIEW_CENTRE
         # Clip the 3D view so near objects do not overwrite cockpit instruments.
         clip = bind(d.sdl,'SDL_RenderSetClipRect',C.c_int,[C.c_void_p,C.c_void_p])
-        viewport = (C.c_int*4)(25,65,PANEL_W-50,490)
-        clip(d.r,viewport)
+        clip(d.r,(C.c_int*4)(*cockpit.VIEW))
         for star in self.stars:
             point = self.project(star)
             if point:
                 x,y,_ = point
                 d.line(x,y,x+1,y+1,(100,135,150))
-        self.object(self.sun,'sun')
+        self.view_labels = []
+        depth = (lambda o: -o[2]) if self.rear_view else (lambda o: o[2])
+        scene = [(depth(self.sun),self.sun,'sun')]
         if not p.deep_space:
-            self.object(self.planet,'planet')
-            self.object(self.station,'station')
-        for mine in self.mine_objects: self.object(mine,'mine')
-        for rock in self.asteroids: self.object(rock,'asteroid')
-        for fragment in self.fragments: self.object(fragment,'ore')
+            scene.append((depth(self.planet),self.planet,'planet'))
+            ports = stations.ports(self.station,self.station_axis)
+            middle = [(a+b)/2 for a,b in zip(ports['A']['position'],ports['B']['position'])]
+            scene.append((min(depth(ports['A']['position']),depth(ports['B']['position']),depth(middle)),self.station,'station'))
+        scene += [(depth(m),m,'mine') for m in self.mine_objects]
+        scene += [(depth(r),r,'asteroid') for r in self.asteroids]
+        scene += [(depth(f),f,'ore') for f in self.fragments]
         for player in self.other_players.values():
-            self.object(player['object'],'player')
+            scene.append((depth(player['object']),player['object'],'player'))
             projected = self.project(player['object'])
-            if projected: d.text(max(35,min(PANEL_W-240,projected[0]-60)),max(100,min(510,projected[1]-35)),player['name'],(140,185,255))
-        for t in self.traffic: self.object(t['object'],'trader')
-        if self.enemy: self.object(self.enemy,self.enemy_kind)
-        if self.disabled_ship: self.object(self.disabled_ship['object'],'disabled')
+            if projected: self.view_labels.append((player['name'],projected[0]-60,projected[1]-35,(140,185,255)))
+        scene += [(depth(t['object']),t['object'],'trader') for t in self.traffic]
+        if self.enemy: scene.append((depth(self.enemy),self.enemy,self.enemy_kind))
+        if self.disabled_ship: scene.append((depth(self.disabled_ship['object']),self.disabled_ship['object'],'disabled'))
+        for _,obj,kind in sorted(scene,key=lambda item:-item[0]): self.object(obj,kind)
+        for label in self.view_labels: self.view_label(*label)
         for m in self.missiles_in_flight:
             point = self.project(m['position'])
             if point:
                 x,y,_ = point
                 d.line(x-6,y,x+6,y,(255,240,160)); d.line(x,y-6,x,y+6,(255,240,160))
-                d.line(x,y,x+(PANEL_W/2-x)*.15,y+(560-y)*.15,GOLD)
+                d.line(x,y,x+(cx-x)*.15,y+(bottom+5-y)*.15,GOLD)
         for e in self.explosions:
             point = self.project(e['position'])
             if point:
@@ -6559,111 +7261,685 @@ class Game:
                     d.line(x+math.cos(a)*radius*.3,y+math.sin(a)*radius*.3,x+math.cos(a)*radius,y+math.sin(a)*radius,color)
         if self.laser_flash:
             color = GOLD if (p.rear_laser if self.rear_view else p.laser) == 'mining' else RED
-            d.line(160,550,550,330,color)
-            d.line(940,550,550,330,color)
-        if self.enemy_shot:
-            shot = self.enemy_shot
-            color = GOLD if shot['kind'] == 'station' else RED if shot['kind'] == 'pirate' else (120,170,255)
+            d.line(cx-260,bottom,cx,cy,color)
+            d.line(cx+260,bottom,cx,cy,color)
+        shot = self.enemy_shot
+        shot_color = None
+        if shot:
+            shot_color = GOLD if shot['kind'] == 'station' else RED if shot['kind'] == 'pirate' else (120,170,255)
             origin = self.project(shot['position'])
             if origin:
                 x,y,_ = origin
-                d.line(x,y,550,330,color)
-                d.line(x+2,y,552,330,color)
-                d.rect(x-6,y-6,12,12,color)
-            else:
-                self.draw_marker(shot['position'],'INCOMING FIRE',color)
-            d.text(435,465,'INCOMING '+shot['kind'].upper()+' FIRE',color)
-        d.line(530,330,542,330); d.line(558,330,570,330)
-        d.line(550,310,550,322); d.line(550,338,550,350)
+                d.line(x,y,cx,cy,shot_color)
+                d.line(x+2,y,cx+2,cy,shot_color)
+                d.rect(x-6,y-6,12,12,shot_color)
+        d.line(cx-20,cy,cx-8,cy); d.line(cx+8,cy,cx+20,cy)
+        d.line(cx,cy-20,cx,cy-8); d.line(cx,cy+8,cx,cy+20)
         clip(d.r,None)
+        self.draw_canopy()
+        if shot and not self.project(shot['position']): self.draw_marker(shot['position'],'INCOMING FIRE',shot_color)
         target,label = self.active_navigation()
         if target is not None: self.draw_marker(target,label,GOLD)
         if self.ship_target is not self.enemy and (not self.disabled_ship or self.ship_target is not self.disabled_ship['object']) and not self.player_label(self.ship_target): self.ship_target = None
         if self.ship_target is not None: self.draw_marker(self.ship_target,self.player_label(self.ship_target) or ('DISABLED SHIP' if self.disabled_ship and self.ship_target is self.disabled_ship['object'] else 'TARGET '+self.enemy_kind.upper()),(255,100,180))
-        self.draw_scanner()
-        self.draw_heat_instrument()
-        d.text(35,73,'REAR VIEW' if self.rear_view else 'FORWARD VIEW',GOLD)
-        if self.faults: d.text(35,127,'DAMAGE: '+'  '.join(FAULT_LABELS[name] for name in sorted(self.faults)),RED)
-        status = self.target_status()
-        if status:
-            name,shield,hull = status
-            d.text(35,100,f'TARGET {name}  SHIELD {shield:.0f}%  HULL {hull:.0f}%',(255,100,180))
-        if getattr(self,'presence',None): d.text(360,73,f'PLAYERS NEARBY {len(self.other_players)} / PvP disabled',(140,185,255))
-        if self.flash: d.rect(26,65,PANEL_W-52,490,RED)
+        room = (width-24)//11
+        d.text(left+12,top+6,'REAR VIEW' if self.rear_view else 'FORWARD VIEW',GOLD)
+        if getattr(self,'presence',None):
+            text = f'PLAYERS NEARBY {len(self.other_players)} / PvP off'
+            d.text(cx-len(text)*11//2,top+6,text,(140,185,255))
+        if self.nav == 'course' and p.waypoint and galactic_distance(p.position,p.waypoint['position']) > .001:
+            distance = f'{galactic_distance(p.position,p.waypoint["position"]):.2f} LY'
+        else: distance = self.range_text(math.sqrt(sum(v*v for v in target[:3]))) if target is not None else ''
+        d.text(right-12-len(distance)*11,top+6,distance,DIM)
+        if self.faults: d.text(left+12,top+28,damage_line([FAULT_LABELS[name] for name in sorted(self.faults)],room),RED)
+        if self.flash: d.rect(left+1,top+1,width-2,height-2,RED)
         if self.alarm:
             bright = int(time.monotonic()*3)%2 == 0
-            d.fill(450,94,375,32,RED if bright else (90,20,24))
-            d.text(460,99,f'ALARM: {self.alarm}',(255,240,230))
-            d.text(718,99,'X silence',(255,240,230))
-        obj,label = self.active_navigation()
-        if obj is None: obj = [0.,0.,0.]
+            # Under the DAMAGE row (top+28), not over it.
+            d.fill(cx-188,top+54,376,32,RED if bright else (90,20,24))
+            d.text(cx-178,top+59,f'ALARM: {self.alarm}'[:23],(255,240,230))
+            d.text(cx+80,top+59,'X silence',(255,240,230))
+        # The canopy's bottom rows: the beacon (or course) on the left, docking and guidance on the right.
+        obj = target if target is not None else [0.,0.,0.]
         c,s = math.cos(self.roll),math.sin(self.roll)
         x,y,z = obj[:3]
         if self.nav == 'course' and p.waypoint and galactic_distance(p.position,p.waypoint['position']) > .001:
             w = p.waypoint
-            d.text(35,563,f'GALACTIC COURSE {w["name"]}: ({w["position"][0]:.2f}, {w["position"][1]:.2f})  {galactic_distance(p.position,w["position"]):.2f} LY')
+            beacon = f'COURSE {w["name"][:14]} ({w["position"][0]:.2f}, {w["position"][1]:.2f})'
         else:
-            d.text(35,563,f'BEACON {label}: X {x*c+y*s:+.0f} Y {-x*s+y*c:+.0f} Z {z:+.0f} RANGE {math.sqrt(x*x+y*y+z*z):.0f}m')
-        if self.heat >= 70:
-            d.text(35,520,'THERMAL LIMIT 90% / SHIELDS DRAINING - TURN AWAY',RED if self.heat >= 90 else GOLD)
-        d.text(35,594,f'SPEED {self.speed:.0f}  FUEL {p.fuel:.2f}  {("REAR "+p.rear_laser.upper() if "rear" in p.equipment else "REAR UNARMED") if self.rear_view else p.laser.upper()} LASER  MISSILES {p.missiles}')
-        d.text(35,625,f'SHIELD {self.shield:.0f}%  HULL {p.hull:.0f}%  HOLD {sum(p.cargo)}/{p.capacity}t')
+            beacon = f'{label.replace("STATION / ","")[:16]} X{x*c+y*s:+.0f} Y{-x*s+y*c:+.0f} Z{z:+.0f}'
         error = math.degrees(self.slot_error())
-        d.text(650,598,('GUIDANCE Y  ' if self.course_assist else '')+('FINE ^F' if self.fine_control else ''),GOLD)
-        d.text(650,625,'DRIVE DISABLED' if self.broken_down else 'AUTODOCK' if self.autodock else f'SLOT {error:+.0f}/14deg '+('CLEAR' if self.dock_clearance else 'R radio'),GOLD)
-        status = 'CLOAKED' if self.cloaked else 'JAMMING' if self.jamming else ''
-        d.text(35,650,f'MINES {p.mines}  {status}  Ctrl+E distress  /  F rear view'+('  /  PATROL ZONE' if self.in_patrol_zone() else ''),GOLD)
-        if p.fuel < 1.0:
-            d.text(810,650,'LOW FUEL',RED)
-        if p.waypoint:
-            w = p.waypoint
-            delta = [b-a for a,b in zip(p.position,w['position'])]
-            d.text(245,681,f'COURSE {w["name"][:18]}  {math.hypot(*delta):.2f} LY / T cruise',GOLD)
-        elif p.fuel < 1.0:
-            d.text(245,681,'LOW FUEL - buy fuel / skim the sun. Press Ctrl+E for distress.',RED)
+        slot = 'DRIVE DISABLED' if self.broken_down else 'AUTODOCK' if self.autodock else f'SLOT {error:+.0f}/14deg '+('CLEAR' if self.dock_clearance else 'R radio')
+        d.text(right-12-len(slot)*11,bottom-26,slot,RED if self.broken_down else GOLD)
+        d.text(left+12,bottom-26,beacon[:room-len(slot)-2],GREEN)
+        guidance = (('GUIDANCE Y LINING UP  ' if self.guidance_lining_up() else 'GUIDANCE Y  ') if self.course_assist else '')+('FINE ^F' if self.fine_control else '')
+        if guidance.strip(): d.text(right-12-len(guidance.strip())*11,bottom-50,guidance.strip(),GOLD)
+        def centred(text, y, color):
+            d.text(cx-len(text)*11//2,y,text,color)
+        if shot: centred('INCOMING '+shot['kind'].upper()+' FIRE',bottom-80,shot_color)
+        if self.heat >= 70: centred('THERMAL LIMIT 90% / SHIELDS DRAINING - TURN AWAY',bottom-104,RED if self.heat >= 90 else GOLD)
         if self.jump_charge:
             count = max(1,math.ceil(3-self.jump_charge['held']))
-            d.fill(240,265,600,90,(4,9,18))
-            d.text(335,280,f'HYPERSPACE IN {count}...',GOLD)
-            d.text(300,320,'Keep holding H. Release to cancel.',GREEN)
+            d.fill(cx-300,cy-45,600,90,(4,9,18))
+            centred(f'HYPERSPACE IN {count}...',cy-30,GOLD)
+            centred('Keep holding H. Release to cancel.',cy+8,GREEN)
         elif self.arrival:
-            d.fill(225,110,610,82,(4,9,18))
-            d.rect(225,110,610,82,GREEN)
-            d.text(250,125,'ARRIVED AT '+self.arrival['name'].upper(),GOLD)
-            d.text(250,157,f'Galactic coordinates {p.position[0]:.2f}, {p.position[1]:.2f}',GREEN)
+            card = top+(92 if self.alarm else 70)   # below the alarm banner when one is up
+            d.fill(cx-305,card,610,82,(4,9,18))
+            d.rect(cx-305,card,610,82,GREEN)
+            d.text(cx-280,card+15,('ARRIVED AT '+self.arrival['name'].upper())[:50],GOLD)
+            d.text(cx-280,card+47,f'Galactic coordinates {p.position[0]:.2f}, {p.position[1]:.2f}',GREEN)
+
+    def draw_canopy(self):
+        """The canopy's frame: a dim border and four corner struts, inside the view."""
+        d = self.d
+        left,top,width,height = cockpit.VIEW
+        right,bottom = left+width,top+height
+        d.rect(left,top,width,height,(29,42,58))
+        for x,dx in ((left,1),(right,-1)):
+            d.line(x,top+40,x+70*dx,top,STRUT)
+            d.line(x+70*dx,top,x+70*dx,top+30,STRUT)
+            d.line(x,bottom-44,x+80*dx,bottom,STRUT)
+
+    def draw_cruise(self):
+        """The interstellar cruise's progress, inside the canopy."""
+        d,p = self.d,self.p
+        left,top,width,height = cockpit.VIEW
+        cx = cockpit.VIEW_CENTRE[0]
+        trip = self.cruise
+        remaining = max(0,trip['duration']-trip['elapsed'])
+        d.text(cx-104,top+70,'INTERSTELLAR CRUISE',GREEN)
+        d.text(left+40,top+120,('Destination: '+trip['destination']['name'])[:54])
+        d.text(left+40,top+160,f'ETA {int(remaining//60)}m {int(remaining%60)}s    FUEL {p.fuel:.2f}/7')
+        d.text(left+40,top+200,f'Coordinates {p.position[0]:.3f}, {p.position[1]:.3f}')
+        d.rect(left+26,top+250,600,25)
+        progress = min(1,trip['elapsed']/trip['duration'])
+        for x in range(int(594*progress)): d.line(left+29+x,top+254,left+29+x,top+271)
+        d.text(left+40,top+300,'T cancels at current coordinates. 1 opens map.')
+
+    def draw_cockpit(self):
+        """The panels round the canopy: TARGET, SHIP, RADAR, TARGET BEARING, HEAT and the bottom row."""
+        self.draw_canopy()
+        self.draw_target_panel()
+        self.draw_ship_panel()
+        self.draw_scanner()
+        self.draw_bearing()
+        self.draw_heat_instrument()
+        self.draw_ship_icon()
+        self.draw_gauges()
+        self.draw_middle()
+        self.draw_modes()
+        self.draw_hold()
+
+    def station_services(self):
+        """What this system's station offers: the same at every station, plus the Crymto exchange where lawless."""
+        services = ['Trade Refuel Repair','Outfit Bank Jobs']
+        if PROFILES[self.p.system][0] in LAWLESS: services.append('Crymto exchange')
+        return services
+
+    def draw_target_panel(self):
+        d,p = self.d,self.p
+        x0,y0,w,h = cockpit.TARGET_PANEL
+        self.panel_box(cockpit.TARGET_PANEL)
+        room = (w-16)//11
+        def row(i, text, color=GREEN):
+            d.text(x0+8,y0+6+i*22,text[:room],color)
+        def heading(kind):
+            d.text(x0+8,y0+6,'TARGET',CREAM)
+            d.text(x0+w-8-len(kind)*11,y0+6,kind,GOLD)
+        target = self.ship_target if self.ship_target is not None else self.enemy
+        status = self.target_status()
+        pilot = next((other['name'] for other in self.other_players.values() if self.ship_target is not None and other['object'] is self.ship_target),None)
+        if self.mode != 'flight':
+            # Cruise and hyperspace: where the ship is bound.
+            heading('COURSE')
+            trip = getattr(self,'cruise',None) if self.mode == 'cruise' else getattr(self,'jump_warp',None)
+            destination = (trip or {}).get('destination') or p.waypoint
+            if destination:
+                row(1,destination['name'],CREAM)
+                if destination.get('position'): row(2,f'{galactic_distance(p.position,destination["position"]):.2f} LY')
+            row(3,'IN TRANSIT',DIM)
+        elif pilot is not None:
+            heading('PILOT')
+            row(1,pilot,CREAM)
+            number = self.player_tag(pilot)[len(pilot):].strip()
+            row(2,number or 'no ship number',GREEN if number else DIM)
+            row(3,'RANGE '+self.range_text(math.sqrt(sum(v*v for v in self.ship_target[:3]))))
+        elif status:
+            name,shield,hull = status
+            heading('SHIP')
+            row(1,name,(255,100,180))
+            row(2,f'SHIELD {shield:.0f}%')
+            self.panel_bar(x0+8,y0+74,w-16,shield/100,GREEN)
+            row(4,f'HULL {hull:.0f}%')
+            self.panel_bar(x0+8,y0+118,w-16,hull/100,GREEN if hull >= 25 else RED)
+            if target is not None: row(6,'RANGE '+self.range_text(math.sqrt(sum(v*v for v in target[:3]))))
+        elif p.deep_space:
+            heading('NONE')
+            row(1,'Deep space',DIM)
+            row(2,'No station here.',DIM)
+        else:
+            heading('STATION')
+            row(1,f'{SYSTEMS[p.system][0]} {stations.TYPE_NAMES[self.station_kind()]}',CREAM)
+            for i,line in enumerate(self.station_services()): row(2+i,line)
+            d.line(x0+8,y0+120,x0+w-8,y0+120,PANEL_EDGE)
+            if not self.docking_permitted(): row(5.5,'DOCKING REFUSED',RED)
+            elif self.arrest_pending(): row(5.5,'SURRENDER ONLY',GOLD)
+            elif self.dock_clearance > 0: row(5.5,f'CLEARED {self.dock_clearance:.0f} s',GOLD)
+            else: row(5.5,'PORTS  R radio',DIM)
+            active = self.active_port()
+            for i,(port,end) in enumerate((('A','FWD'),('B','AFT'))):
+                if port == active: row(6.5+i,f'> {port} ({end})  ACTIVE',GOLD)
+                else: row(6.5+i,f'  {port} ({end})')
+
+    def draw_ship_panel(self):
+        d,p = self.d,self.p
+        x0,y0,w,h = cockpit.SHIP_PANEL
+        self.panel_box(cockpit.SHIP_PANEL)
+        room = (w-16)//11
+        d.text(x0+8,y0+6,'SHIP',CREAM)
+        d.text(x0+8,y0+28,self.commander_name()[:room],CREAM)
+        d.text(x0+8,y0+50,f'Rank {p.rank}'[:room],DIM)
+        bars = (('HULL',f'{p.hull:.0f}%',p.hull/100,GREEN if p.hull >= 25 else RED),
+                ('SHIELDS',f'{self.shield:.0f}%',self.shield/100,GREEN if self.shield >= 25 else GOLD),
+                ('HEAT',f'{self.heat:.0f}%',self.heat/100,RED if self.heat >= 90 else GOLD if self.heat >= 70 else GREEN),
+                ('FUEL',f'{p.fuel:.1f} / 7 t',p.fuel/7,RED if p.fuel < 1 else GREEN))
+        for i,(label,value,fraction,color) in enumerate(bars):
+            y = y0+74+i*34
+            d.text(x0+8,y,label,GREEN)
+            d.text(x0+w-8-len(value)*11,y,value,color)
+            self.panel_bar(x0+8,y+22,w-16,fraction,color)
+
+    # The player's hauler from above, nose up: (x, y) points round its centre and the edges between them.
+    HAULER = ((0,-54),(-10,-42),(10,-42),(-18,-30),(18,-30),(-18,38),(18,38),
+              (-42,-14),(-18,-14),(-42,24),(-18,24),(18,-14),(42,-14),(18,24),(42,24),
+              (-14,38),(-14,50),(-4,50),(-4,38),(4,38),(4,50),(14,50),(14,38),
+              (-18,-6),(18,-6),(-18,10),(18,10))
+    HAULER_EDGES = ((0,1),(0,2),(1,2),(1,3),(2,4),(3,4),(3,5),(4,6),(5,6),
+                    (7,8),(7,9),(9,10),(8,10),(11,12),(12,14),(13,14),(11,13),
+                    (15,16),(16,17),(17,18),(19,20),(20,21),(21,22),(23,24),(25,26))
+
+    def draw_ship_icon(self):
+        d = self.d
+        x0,y0,w,h = cockpit.SHIP_ICON
+        self.panel_box(cockpit.SHIP_ICON)
+        cx,cy = x0+w//2,y0+68
+        for a,b in self.HAULER_EDGES:
+            (ax,ay),(bx,by) = self.HAULER[a],self.HAULER[b]
+            color = GOLD if a >= 15 and a <= 22 else GREEN
+            d.line(cx+ax,cy+ay,cx+bx,cy+by,color)
+        # Corner brackets round the outline.
+        for x,dx in ((x0+10,1),(x0+w-10,-1)):
+            for y,dy in ((y0+8,1),(y0+130,-1)):
+                d.line(x,y,x+12*dx,y,PANEL_EDGE)
+                d.line(x,y,x,y+12*dy,PANEL_EDGE)
+
+    def gauge_values(self):
+        """The gauges: (label, fraction full, colour) for speed, fuel, heat, shields and the weapon's readiness."""
+        p = self.p
+        weapon = p.rear_laser if self.rear_view else p.laser
+        delay = LASERS.get(weapon,LASERS['pulse'])[0]
+        ready = 1-min(1,max(0,self.cooldown)/delay)
+        armed = not self.rear_view or 'rear' in p.equipment
+        return [('SPD',min(1,abs(self.speed)/TOP_SPEED),GREEN),
+                ('FUEL',p.fuel/7,RED if p.fuel < 1 else GREEN),
+                ('HEAT',min(1,self.heat/100),RED if self.heat >= 90 else GOLD if self.heat >= 70 else GREEN),
+                ('SHLD',self.shield/100,GREEN if self.shield >= 25 else GOLD),
+                ('WPN',ready if armed else 0,RED if 'laser' in self.faults else GREEN if ready >= 1 else GOLD)]
+
+    def draw_gauges(self):
+        d = self.d
+        x0,y0,w,h = cockpit.GAUGES
+        self.panel_box(cockpit.GAUGES)
+        for i,(label,fraction,color) in enumerate(self.gauge_values()):
+            y = y0+14+i*32
+            d.text(x0+10,y,label,GREEN)
+            self.panel_bar(x0+62,y+5,w-74,fraction,color,10)
+
+    def draw_middle(self):
+        """The middle screen: a header with the page's name between the back and forward arrows, then the page."""
+        d = self.d
+        x0,y0,w,h = cockpit.MIDDLE
+        self.panel_box(cockpit.MIDDLE)
+        self.middle_buttons = []
+        page = self.middle.page
+        back,forward = cockpit.page_arrows()
+        for rect,direction in ((back,-1),(forward,1)):
+            self.page_arrow(rect,direction)
+            self.middle_buttons.append((*rect,lambda direction=direction:self.turn_page(direction)))
+        detail = self.page_detail(page)
+        left,right = back[0]+back[2]+4,forward[0]-4   # the title sits between the arrows
+        if page == 'comms':   # and, on Comms, left of its Full page button (Ctrl+5)
+            right -= 113
+            self.panel_button(right+4,y0+1,109,'Full page',self.toggle_comms_page,self.middle_buttons)
+        title = (cockpit.PAGE_NAMES[page]+(f' ({detail})' if detail else ''))[:(right-left)//11]
+        d.text((left+right)//2-len(title)*11//2,y0+2,title,CREAM)
+        d.line(x0+6,y0+cockpit.HEADER_H+1,x0+w-6,y0+cockpit.HEADER_H+1,PANEL_EDGE)
+        getattr(self,'draw_page_'+page)(x0+10,y0+cockpit.HEADER_H+5,w-20)
+
+    def page_arrow(self, rect, direction):
+        """A wireframe arrowhead in the header: pointing left for back, right for forward."""
+        x,y,w,h = rect
+        cy = y+h//2
+        tip,base = (x+7,x+18) if direction < 0 else (x+w-7,x+w-18)
+        for dy in range(-6,7,3): self.d.line(base,cy+dy,tip,cy,GOLD)
+
+    def page_detail(self, page):
+        """The header's bracketed detail for each page."""
+        p = self.p
+        if page == 'docking':
+            if p.deep_space or self.mode != 'flight': return ''
+            return 'PORT '+self.active_port()
+        if page == 'target':
+            status = self.target_status()
+            return status[0] if status else ''
+        if page == 'comms':
+            if not self.comms_typing_now(): return 'TO '+self.comms_channel_label()
+            return 'ENTER sends, TAB channel' if self.comms_line else 'BACKSPACE stops'
+        if page == 'nav':
+            return p.waypoint['name'] if p.waypoint else ''
+        if page == 'cargo': return f'{sum(p.cargo)}/{p.capacity} t'
+        if page == 'market':
+            system = self.market_ahead()
+            return SYSTEMS[system][0] if system is not None else ''
+        if page == 'combat': return 'ALARM' if self.alarm else ''
+        return ''
+
+    def page_row(self, x, y, width, text, color=GREEN):
+        """A page's line of text, cut to the page's width (in pixels)."""
+        self.d.text(x,y,text[:width//11],color)
+
+    def draw_page_docking(self, x, top, width):
+        d,p = self.d,self.p
+        if p.deep_space or self.mode != 'flight' or sum(v*v for v in self.station) > 1e10:
+            self.page_row(x,top,width,'No station here.',DIM)
+            self.page_row(x,top+24,width,'The Docking page lights within 10 km of one.',DIM)
+            return
+        r = self.port_readout()
+        column = 24*11
+        rows = [(f'PORT {r["port"]} ({"FWD" if r["port"] == "A" else "AFT"})',GOLD)]
+        if not self.docking_permitted(): rows.append(('CLEARANCE REFUSED',RED))
+        elif self.arrest_pending(): rows.append(('SURRENDER ONLY',GOLD))
+        elif r['clearance'] > 0: rows.append((f'CLEARANCE {r["clearance"]:.0f} s',GOLD))
+        else: rows.append(('CLEARANCE none: R radio',DIM))
+        rows.append((f'RANGE {self.range_text(r["range"])}',GREEN))
+        cone = math.degrees(stations.APPROACH_CONE)
+        rows.append((f'ALIGN {r["align_deg"]:.0f}° / {cone:.0f}',GREEN if r['align_deg'] <= cone else RED))
+        tolerance = math.degrees(DOCK_ROLL_TOLERANCE)
+        rows.append((f'ROLL {r["roll_deg"]:+.0f}° / {tolerance:.0f}',GREEN if abs(r['roll_deg']) <= tolerance else GOLD))
+        speed = r['speed']
+        rows.append((f'SPEED {speed:.0f} / {r["limit"]}',RED if speed > r['limit'] else GREEN if speed > 0 else DIM))
+        for i,(text,color) in enumerate(rows): self.page_row(x,top+i*23,column,text,color)
+        # The approach corridor: the port on the left, 2.5 km out on the right, the cone round the port's axis.
+        port_x,right,mid,half = self.corridor_geometry()
+        d.text(port_x,top-2,'CORRIDOR 0-2.5 km',DIM)
+        for sign in (-1,1): d.line(port_x,mid+sign*4,right,mid+sign*half,PANEL_EDGE)
+        for i in range(0,right-port_x,12): d.line(port_x+i,mid,min(right,port_x+i+5),mid,STRUT)
+        d.line(port_x,mid-10,port_x,mid+10,GOLD)
+        for km,label in ((0,'0'),(1000,'1'),(2000,'2'),(cockpit.CORRIDOR_RANGE,'2.5')):
+            tick = port_x+round((right-port_x)*km/cockpit.CORRIDOR_RANGE)
+            d.line(tick,mid+half+2,tick,mid+half+6,PANEL_EDGE)
+            d.text(tick-len(label)*11//2,mid+half+6,label,DIM)
+        mx,my = self.corridor_marker()
+        inside = 0 <= r['along'] and r['align_deg'] <= cone
+        color = GOLD if inside else RED
+        d.line(mx-6,my,mx+5,my-6,color); d.line(mx+5,my-6,mx+5,my+6,color); d.line(mx+5,my+6,mx-6,my,color)
+
+    def corridor_geometry(self):
+        """The Docking page's corridor: (port x, 2.5 km x, axis y, the cone's half-height at 2.5 km)."""
+        x0,y0,w,h = cockpit.MIDDLE
+        return x0+300,x0+w-24,y0+96,40
+
+    def corridor_marker(self):
+        """Where the ship's marker sits on the corridor (screen x, y): along the port's axis and across it, on the
+        cone's scale; kept inside the corridor's box when out past 2.5 km or off to the side."""
+        r = self.port_readout()
+        port_x,right,mid,half = self.corridor_geometry()
+        span = right-port_x
+        x = port_x+span*max(0.,min(1.,r['along']/cockpit.CORRIDOR_RANGE))
+        width = cockpit.CORRIDOR_RANGE*math.tan(stations.APPROACH_CONE)   # the cone's half-width at 2.5 km
+        y = mid+max(-half-6,min(half+6,r['across']/width*half))
+        return x,y
+
+    def draw_page_target(self, x, top, width):
+        p = self.p
+        pilot = next((other['name'] for other in self.other_players.values() if self.ship_target is not None and other['object'] is self.ship_target),None)
+        target = self.ship_target if self.ship_target is not None else self.enemy
+        status = self.target_status()
+        if pilot is not None:
+            number = self.player_tag(pilot)[len(pilot):].strip()
+            self.page_row(x,top,width,'PILOT '+pilot,CREAM)
+            self.page_row(x,top+23,width,'SHIP NUMBER '+(number or 'none'),GREEN if number else DIM)
+            self.page_row(x,top+46,width,'RANGE '+self.range_text(math.sqrt(sum(v*v for v in self.ship_target[:3]))))
+            return
+        if status:
+            name,shield,hull = status
+            self.page_row(x,top,width,name,(255,100,180))
+            if target is not None:
+                self.page_row(x,top+23,width,'RANGE '+self.range_text(math.sqrt(sum(v*v for v in target[:3]))))
+            bar = width-150
+            for i,(label,value) in enumerate((('SHIELD',shield),('HULL',hull))):
+                y = top+52+i*30
+                self.page_row(x,y,140,f'{label} {value:.0f}%')
+                self.panel_bar(x+140,y+6,bar,value/100,GREEN if value >= 25 else RED,10)
+            if self.enemy is not None and target is self.enemy: self.page_row(x,top+116,width,'HOSTILE: it has you targeted.',RED)
+            return
+        if self.ship_target is not None:
+            self.page_row(x,top,width,'SHIP',CREAM)
+            self.page_row(x,top+23,width,'RANGE '+self.range_text(math.sqrt(sum(v*v for v in self.ship_target[:3]))))
+            return
+        self.page_row(x,top,width,'Nothing targeted.',DIM)
+        self.page_row(x,top+23,width,'TAB picks a ship; or click one on the radar.',DIM)
+
+    def draw_page_comms(self, x, top, width):
+        """The 0.11 comms log (newest at the bottom), the typing line with its priority, and the buttons: Herbert's
+        while he can be called, then the quick replies that fit."""
+        d = self.d
+        view = getattr(self,'frame_view',None) or self.comms.view()
+        x0,y0,w,h = cockpit.MIDDLE
+        chars = width//11
+        type_y,buttons_y = y0+h-50,y0+h-28
+        rows = []
+        for message in view['messages'][-COMMS_PANEL_LINES:]:
+            color = self.comms_color(message)
+            rows += [(row,color) for row in self.comms_rows(message,chars)]
+        if view['errors']: rows.append((str(view['errors'][-1])[:chars],RED))
+        step = 19
+        rows = rows[-((type_y-top)//step):]
+        if not rows: self.page_row(x,top,width,'No messages yet.',DIM)
+        for i,(row,color) in enumerate(rows): d.text(x,top+i*step,row,color)
+        # The typing line: what is typed (or how to start), then the priority (P or a click).
+        word = self.comms_priority_label()
+        word_x = x+width-len('SÉCURITÉ')*11
+        word_color = RED if self.comms_priority in ('distress','urgency') else GOLD if self.comms_priority == 'safety' else DIM
+        line_w = word_x-x-12
+        if self.comms_typing_now():
+            self.text_cursor(x,type_y,'> '+self.comms_line[-(line_w//11-3):])
+        elif self.comms_shown():
+            self.page_row(x,type_y,line_w,'ENTER types, P priority',GREEN)
+        else:
+            self.page_row(x,type_y,line_w,'Typing waits for the jump.',DIM)
+        d.text(word_x,type_y,word,word_color)
+        if self.comms_shown():
+            self.middle_buttons.append((x,type_y,line_w,22,self.start_comms_typing))
+            self.middle_buttons.append((word_x-4,type_y,len(word)*11+8,22,self.cycle_comms_priority))
+        # The buttons: Herbert's, then the quick replies that fit.
+        bx,end = x,x+width
+        for w_,label,action in (self.herbert_actions() if self.mode in COMMS_PAGE_MODES else []):
+            self.panel_button(bx,buttons_y,w_,label,action,self.middle_buttons)
+            bx += w_+6
+        if not self.comms_shown(): return
+        for label,text in COMMS_QUICK:
+            w_ = len(label)*11+12
+            if bx+w_ > end: break
+            self.panel_button(bx,buttons_y,w_,label,lambda text=text:self.quick_reply(text),self.middle_buttons)
+            bx += w_+6
+
+    def draw_page_nav(self, x, top, width):
+        p = self.p
+        w = p.waypoint
+        if w:
+            self.page_row(x,top,width,f'COURSE {w["name"]}  {galactic_distance(p.position,w["position"]):.2f} LY',GOLD)
+            fuel = self.jump_fuel_to(w)
+            self.page_row(x,top+23,width,f'JUMP FUEL {fuel:.2f} / {p.fuel:.2f} aboard'+('  NOT ENOUGH' if fuel > p.fuel else ''),
+                          RED if fuel > p.fuel else GREEN)
+        else:
+            self.page_row(x,top,width,'No course. 1 Nav picks a destination.',DIM)
+            self.page_row(x,top+23,width,f'FUEL {p.fuel:.2f} / 7',GREEN)
+        if self.jump_charge:
+            count = max(1,math.ceil(3-self.jump_charge['held']))
+            self.page_row(x,top+52,width,f'HYPERSPACE IN {count}... to {self.jump_charge["destination"]["name"]}',GOLD)
+            self.page_row(x,top+75,width,'Keep holding H. Release to cancel.',GREEN)
+        elif self.mode == 'hyperspace':
+            trip = getattr(self,'jump_warp',None) or {}
+            self.page_row(x,top+52,width,'IN HYPERSPACE to '+(trip.get('destination') or {}).get('name','?'),GOLD)
+        elif self.mode == 'cruise' and getattr(self,'cruise',None):
+            trip = self.cruise
+            remaining = max(0,trip['duration']-trip['elapsed'])
+            self.page_row(x,top+52,width,f'CRUISE ETA {int(remaining//60)}m {int(remaining%60)}s  T cancels',GOLD)
+        elif w:
+            self.page_row(x,top+52,width,'Hold H 3 s to jump; T cruise.',DIM)
+        if self.mode == 'flight':
+            obj,label = self.active_navigation()
+            if obj is not None and not (self.nav == 'course' and p.waypoint):
+                self.page_row(x,top+104,width,f'NAV {label}  {self.range_text(math.sqrt(sum(v*v for v in obj[:3])))}',GREEN)
+
+    def draw_page_cargo(self, x, top, width):
+        rows,_ = self.cargo_sales()
+        if not rows:
+            self.page_row(x,top,width,'The hold is empty.',DIM)
+            self.page_row(x,top+23,width,'7 Cargo shows the best sales once you buy.',DIM)
+            return
+        flare = solar_flare()
+        self.page_row(x,top,width,f'{"GOOD":<11}{"T":>3} {"PAID":>5} {"HERE":>5}  BEST SALE',DIM)
+        shown = rows if len(rows) <= 5 else rows[:4]
+        for i,(good,tonnes,paid,local,best) in enumerate(shown):
+            here = '-' if local is None else str(local)
+            sale = 'no signal' if flare else 'none in range' if best is None else f'{best[0]:>4} {SYSTEMS[best[1]][0]}'
+            gain = None if flare or best is None else best[0]-paid
+            color = GREEN if gain is None else (120,220,140) if gain > 0 else (200,120,110)
+            name = self.page_good_name(good)
+            self.page_row(x,top+23+i*23,width,f'{name:<11}{tonnes:>3} {paid:>5} {here:>5}  {sale}',color)
+        if len(rows) > 5: self.page_row(x,top+23+4*23,width,f'+{len(rows)-4} more: 7 Cargo',DIM)
+
+    @staticmethod
+    def page_good_name(good):
+        """A good's name for the middle screen's columns (at most 11 characters); contraband ends in *."""
+        name = GOODS[good] if len(GOODS[good]) <= 10 else GOODS[good].split()[-1]
+        return name+(' *' if good in ILLEGAL else '')
+
+    def market_ahead(self):
+        """The system whose station is ahead: this one's in flight, the course's world in cruise or deep space."""
+        p = self.p
+        if self.mode == 'flight' and not p.deep_space: return p.system
+        w = p.waypoint
+        system = w.get('system') if isinstance(w,dict) else None
+        return system if type(system) is int and 0 <= system < len(SYSTEMS) else None
+
+    def draw_page_market(self, x, top, width):
+        system = self.market_ahead()
+        if system is None:
+            self.page_row(x,top,width,'No station ahead.',DIM)
+            self.page_row(x,top+23,width,'Lock a course to a world to see its prices.',DIM)
+            return
+        flare = solar_flare() and (system != self.p.system or self.p.deep_space)   # a flare blanks remote prices only
+        column = width//2
+        for c in range(2): self.page_row(x+c*column,top,column,f'{"GOOD":<12} {"BUY":>4} {"SELL":>4}',DIM)
+        for good,name in enumerate(GOODS):
+            cx,cy = x+(good//5)*column,top+20+(good%5)*20
+            label = self.page_good_name(good)
+            if flare: prices = static(9)
+            else: prices = f'{quote(system,good,True):>4} {quote(system,good,False):>4}'
+            self.page_row(cx,cy,column,f'{label:<12} {prices}',(120,140,150) if flare else GREEN)
+        if flare: self.page_row(x,top+122,width,f'SOLAR FLARE: no price signal for about {math.ceil(flare/60)} min.',(220,110,80))
+        else: self.page_row(x,top+122,width,'cr a tonne, latest known. * contraband',DIM)
+
+    def draw_page_combat(self, x, top, width):
+        p = self.p
+        heat_color = RED if self.heat >= 90 else GOLD if self.heat >= 70 else GREEN
+        self.page_row(x,top,width,f'HEAT {self.heat:.0f}% / LIMIT 90',heat_color)
+        self.panel_bar(x+230,top+6,width-230,self.heat/100,heat_color,10)
+        weapon = p.rear_laser if self.rear_view else p.laser
+        ready = dict((label,fraction) for label,fraction,_ in self.gauge_values())['WPN']
+        state = 'FAULT' if 'laser' in self.faults else 'READY' if ready >= 1 else 'COOLING'
+        self.page_row(x,top+23,width,f'{"REAR " if self.rear_view else ""}{weapon.upper()} LASER {state}',RED if state == 'FAULT' else GREEN)
+        self.page_row(x,top+46,width,f'MISSILES {p.missiles}   MINES {p.mines}',GREEN)
+        status = self.target_status()
+        if self.enemy is not None:
+            full = ENEMY_STRENGTH.get(self.enemy_kind,6)
+            half = full/2
+            strength = max(0,min(full,self.enemy[3]))
+            shield,hull = max(0,strength-half)/half*100,min(strength,half)/half*100
+            distance = self.range_text(math.sqrt(sum(v*v for v in self.enemy[:3])))
+            self.page_row(x,top+75,width,f'ENEMY {self.enemy_kind.upper()} {distance}  SHIELD {shield:.0f}%  HULL {hull:.0f}%',(255,100,180))
+            self.page_row(x,top+98,width,'TARGETING YOU: '+self.enemy_kind.upper(),RED)
+        else:
+            if status: self.page_row(x,top+75,width,f'TARGET {status[0]}  HULL {status[2]:.0f}%',(255,100,180))
+            self.page_row(x,top+98,width,'Nobody has you targeted.',DIM)
+        if self.alarm: self.page_row(x,top+121,width,'ALARM: '+self.alarm+'  X silences',RED)
+
+    def draw_modes(self):
+        """The mode list: the seven pages; the one shown gold with an arrowhead, a lit one red with a dot."""
+        d = self.d
+        self.mode_buttons = []
+        self.panel_box(cockpit.MODES)
+        for page,(x,y,w,h) in cockpit.mode_rows():
+            selected,lit = page == self.middle.page,page in self.middle.lit
+            color = GOLD if selected else RED if lit else DIM
+            cy = y+h//2
+            if selected:
+                for dy in range(-5,6,2): d.line(x+6,cy+dy,x+14,cy,GOLD)
+            elif lit:   # a round dot
+                d.fill(x+7,cy-4,6,9,RED); d.fill(x+6,cy-3,8,7,RED); d.fill(x+5,cy-2,10,5,RED)
+            d.text(x+22,y+1,cockpit.PAGE_NAMES[page],color)
+            self.mode_buttons.append((x,y,w,h,lambda page=page:self.select_page(page)))
+
+    def draw_hold(self):
+        d,p = self.d,self.p
+        x0,y0,w,h = cockpit.HOLD
+        self.panel_box(cockpit.HOLD)
+        used = sum(p.cargo)
+        d.text(x0+8,y0+6,'HOLD',CREAM)
+        d.text(x0+8,y0+28,f'{used}/{p.capacity} t'[:(w-16)//11],GREEN)
+        self.panel_bar(x0+8,y0+54,w-16,used/max(1,p.capacity),GOLD if used >= p.capacity else GREEN)
+        aboard = sorted((n,good) for good,n in enumerate(p.cargo) if n > 0)[::-1]
+        lines = [f'{SHORT_GOODS[good]:<5}{n:>3}t' for n,good in aboard]
+        if len(lines) > 5: lines = lines[:4]+[f'+{len(lines)-4} more']
+        for i,line in enumerate(lines): d.text(x0+8,y0+68+i*21,line,DIM)
 
     def object(self,obj,kind):
+        if kind == 'station': return self.draw_station()
         projected = self.project(obj)
         if projected is None: return
         sx,sy,scale = projected
-        if sx < -800 or sx > PANEL_W+800 or sy < -800 or sy > H+800: return
+        if sx < -800 or sx > W+800 or sy < -800 or sy > H+800: return
         color = GREEN
         angle = self.roll if self.rear_view else -self.roll
         if kind == 'trader':
             # A boxy freighter: cargo pod with stubby fins.
             points = [(-45,-14),(45,-14),(45,14),(-45,14),(-60,0),(60,0),(0,-24)]
             edges = [(0,1),(1,2),(2,3),(3,0),(0,4),(3,4),(1,5),(2,5),(0,6),(1,6)]
+            outline = (4,0,6,1,5,2,3)
             color = (205,205,215)
         elif kind in ('pirate','police','disabled','player'):
             points = [(-65,10),(-20,-15),(0,-5),(20,-15),(65,10),(0,28)]
             edges = [(0,1),(1,2),(2,3),(3,4),(4,5),(5,0),(0,4),(2,5)]
+            outline = (0,1,2,3,4,5)
             color = GOLD if kind == 'disabled' else RED if kind == 'pirate' else (120,170,255)
-        elif kind == 'station':
-            angle += -self.station_angle if self.rear_view else self.station_angle
-            points = [(math.cos(i*math.pi/4)*100,math.sin(i*math.pi/4)*100) for i in range(8)]
-            points += [(-35,-12),(35,-12),(35,12),(-35,12)]
-            edges = [(i,(i+1)%8) for i in range(8)] + [(8,9),(9,10),(10,11),(11,8)]
         else:
             count = 24 if kind in ('sun','planet') else 7 if kind == 'asteroid' else 6 if kind == 'mine' else 4
             radius = 220 if kind == 'sun' else self.planet_radius if kind == 'planet' else 42 if kind == 'asteroid' else 9 if kind == 'mine' else 7
             points = [(math.cos(i*2*math.pi/count)*radius*(1 if kind != 'asteroid' else 0.85+0.15*(i%3)), math.sin(i*2*math.pi/count)*radius) for i in range(count)]
             edges = [(i,(i+1)%count) for i in range(count)]
+            outline = range(count)
             color = RED if kind == 'mine' else (90,150,220) if kind == 'planet' else GOLD if kind in ('sun','asteroid') else (150,190,255)
         c,s = math.cos(angle),math.sin(angle)
         points = [(sx+(x*c-y*s)*scale,sy+(x*s+y*c)*scale) for x,y in points]
+        self.d.polygon([points[i] for i in outline],SPACE,centre=(sx,sy))
         for a,b in edges: self.d.line(*points[a],*points[b],color)
         if abs(obj[2]) > 150:
-            self.d.text(max(30,min(PANEL_W-220,sx-65)),max(75,min(525,sy+110*scale)),kind.upper(),color)
+            self.view_labels.append((kind.upper(),sx-65,sy+110*scale,color))
+
+    def draw_station(self):
+        """The station as a solid from its model: faces turned towards the camera filled with space, far first, each
+        followed by its slot (black) and the lines on it, hull green, ports and their slot light bars gold, so the
+        near side hides the far. Everything reaching behind the camera is cut at the near plane, lines to the view."""
+        centre,axis = self.station,self.station_axis
+        if sum(v*v for v in centre) > 1e10: return   # beyond 100 km: too small to see
+        kind = self.station_kind()
+        verts,_ = stations.model(kind)
+        # The model sits in the un-rolled flight frame; `project` adds the ship's roll and the rear view's flip,
+        # so on screen the station turns by station_angle - roll, as the flat station did.
+        ex,ey,ez = (stations.to_view(e,(0.,0.,0.),axis,self.station_angle) for e in ((1.,0.,0.),(0.,1.,0.),(0.,0.,1.)))
+        near = 6.
+        depth = (lambda q: -q[2]) if self.rear_view else (lambda q: q[2])
+        left,top,width,height = cockpit.VIEW
+        right,bottom = left+width,top+height
+        def segment(a,b,color,lo,hi):
+            za,zb = depth(a),depth(b)
+            if za <= near and zb <= near: return
+            if za <= near or zb <= near:
+                t = (near-za)/(zb-za)
+                cut = [p+t*(q-p) for p,q in zip(a,b)]
+                a,b = (cut,b) if za <= near else (a,cut)
+            pa,pb = self.project(a),self.project(b)
+            if pa is None or pb is None: return
+            line = clip_line(pa[0],pa[1],pb[0],pb[1],left,top,right,bottom)
+            if line: self.d.line(*line,stations.depth_colour(color,(max(za,near)+max(zb,near))/2,lo,hi))
+        def fill(points,colour):
+            shown = [self.project(q) for q in clip_polygon_near(points,depth,near+.01)]
+            shown = [(sx,sy) for sx,sy,_ in (q for q in shown if q)]
+            if len(shown) >= 3: self.d.polygon(shown,colour)
+        # Depth shading: the nearest vertex in front of the camera is full brightness, the farthest 35 %.
+        front = [z for z in (depth([centre[i]+x*ex[i]+y*ey[i]+z*ez[i] for i in range(3)]) for x,y,z in verts) if z > near]
+        lo,hi = (min(front),max(front)) if front else (0.,0.)
+        box = self.approach_box()   # in its port's plane: drawn on its slot, under the port's own gold lines
+        box_z = 0. if self.active_port() == 'A' else stations.LENGTH
+        for item in stations.paint(kind,centre,axis,self.station_angle,rear=self.rear_view,near=near):
+            if item[0] == 'face': fill(item[1],SPACE)
+            elif item[0] == 'slot':
+                fill(item[1],STATION_SLOT)
+                if box and item[2] == box_z:
+                    for a,b in zip(box,box[1:]+box[:1]): segment(a,b,APPROACH_BOX,0.,0.)
+            else: segment(item[1],item[2],GOLD if item[3] else GREEN,lo,hi)
+        middle = [c+a*stations.LENGTH/2 for c,a in zip(centre,axis)]
+        distance = math.sqrt(sum(v*v for v in middle))
+        shown = self.project(middle)
+        if shown is None: return
+        sx,sy,scale = shown
+        if distance <= STATION_NUMBER_RANGE and left < sx-12 and sx+12 < right and top < sy-10 and sy+10 < bottom:
+            self.d.text(sx-11,sy-9,f'{self.p.system+1:02d}',GOLD)
+        if distance > 150 and left-200 < sx < right+200 and top-200 < sy < bottom+200:
+            self.view_label('STATION',sx-65,sy+110*scale,GREEN)
+        # The active port's label, unless the gold nav marker already names it.
+        name = self.active_port()
+        port = stations.ports(centre,axis)[name]['position']
+        shown = self.project(port)
+        if shown and not self.active_navigation()[1].endswith(' / PORT '+name) and sum(v*v for v in port) <= STATION_NUMBER_RANGE**2:
+            sx,sy,_ = shown
+            if left+6 < sx-33 and sx+33 < right-6 and top+28 < sy+12 and sy+33 < bottom-50:
+                self.d.text(sx-33,sy+12,'PORT '+name,GOLD)
+
+
+def damage_line(labels, room):
+    """'DAMAGE: ' and the fault labels two spaces apart in `room` characters, dropping whole labels from the end
+    (with '+N' saying how many) rather than cutting one mid-word."""
+    for shown in range(len(labels), -1, -1):
+        rest = len(labels)-shown
+        text = 'DAMAGE: '+'  '.join(labels[:shown])+(('  ' if shown else '')+f'+{rest}' if rest else '')
+        if len(text) <= room: return text
+    return 'DAMAGE'[:room]
+
+
+def credits_line(credits, crymto, kills, room):
+    """The top-right credits line in `room` characters: CR, CYM and KILLS two spaces apart, then one; then
+    Crymto goes, then kills. An item goes whole: a number is never cut."""
+    cr,cym,k = f'CR {credits:.0f}',f'CYM {crymto}',f'KILLS {kills}'
+    for items in ((cr,cym,k),(cr,k)):
+        for gap in ('  ',' '):
+            if len(text := gap.join(items)) <= room: return text
+    return cr
+
+
+clip_polygon_near = stations.clip_polygon_near
+
+
+def clip_line(x1, y1, x2, y2, left, top, right, bottom):
+    """The part of a screen segment inside the rectangle (Liang-Barsky), or None."""
+    dx,dy = x2-x1,y2-y1
+    t0,t1 = 0.,1.
+    for p,q in ((-dx,x1-left),(dx,right-x1),(-dy,y1-top),(dy,bottom-y1)):
+        if p == 0:
+            if q < 0: return None
+            continue
+        t = q/p
+        if p < 0:
+            if t > t1: return None
+            t0 = max(t0,t)
+        else:
+            if t < t0: return None
+            t1 = min(t1,t)
+    return x1+t0*dx,y1+t0*dy,x1+t1*dx,y1+t1*dy
 
 
 def self_test():
@@ -6756,7 +8032,7 @@ def main():
     remote = None
     game = None
     presence = None
-    feedback = None
+    client = None
     try:
         offline_save = SAVE
         if options.offline and options.server: raise ValueError('Choose --offline or --server')
@@ -6766,18 +8042,25 @@ def main():
         testing = '--smoke-test' in sys.argv or '--grant-test-credits' in sys.argv
         # Nothing installs without the player's yes, and the game does not start until they answer.
         latest = None if testing else update_available()
-        if latest and options.offline:
+        if not testing:
+            import checkin
+            FEEDBACK_OUTBOX.mkdir(parents=True,exist_ok=True)
+            client = checkin.CheckinClient(FEEDBACK_OUTBOX)
+            client.start()   # waits quietly for an email on a first launch; the start screen wakes it
+        if options.offline and not testing and (latest or checkin.needs_email(checkin.load_state())):
             from startup import StartScreen,load_connection
             display = Display()
-            screen = StartScreen(display,load_connection(),update=latest)
+            screen = StartScreen(display,load_connection(),update=latest,checkin=client)
             try:
-                answer = screen.ask_update()
-                if answer == 'quit': return
-                if answer == 'update':
-                    if screen.install(install_update):
-                        screen.close(); display.quit(); display = None
-                        restart_updated()
-                    notify(screen.error)
+                if latest:
+                    answer = screen.ask_update()
+                    if answer == 'quit': return
+                    if answer == 'update':
+                        if screen.install(install_update):
+                            screen.close(); display.quit(); display = None
+                            restart_updated()
+                        notify(screen.error)
+                if screen.welcome is not None and screen.ask_email() == 'quit': return
             finally: screen.close()
         if testing and options.server: raise ValueError('Testing CLI tools require offline mode')
         if '--smoke-test' in sys.argv:
@@ -6790,7 +8073,7 @@ def main():
                 config.update(server=options.server,token_file=str(options.token_file),
                               allow_lan=options.allow_lan,import_local_save=options.import_local_save)
             display = Display()
-            screen = StartScreen(display,config,update=latest)
+            screen = StartScreen(display,config,update=latest,checkin=client)
             if options.server: screen.selected = 0
             try:
                 while True:
@@ -6839,13 +8122,11 @@ def main():
             return
         if display is None: display = Display()
         game = Game(display)
+        game.checkin = client
         if remote:
             game.remote_save = remote
             from presence import PresenceClient
-            from save_sync import FeedbackUploader
             presence = PresenceClient(remote,game.comms)
-            feedback = FeedbackUploader(remote,FEEDBACK_OUTBOX)
-            feedback.start()
             game.presence = presence
             from market import MarketClient
             game.market_client = MarketClient(remote)
@@ -6884,7 +8165,7 @@ def main():
         if display: display.quit()
         if presence: presence.close()
         if game is not None and game.market_client: game.market_client.close()
-        if feedback: feedback.close()
+        if client: client.close()
         if remote:
             remote.close()
             print(remote.status)
