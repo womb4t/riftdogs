@@ -127,6 +127,7 @@ Versions are targets, not promises. Each phase has a GitHub milestone with the s
 - A crowd-written galactic guide.
 - Fuel you can trade as cargo.
 - **SpaceNet** (parked 2026-11-25, not designed yet): one place in the game to go and look things up. It holds all the manuals and information about the game, and maybe more. Pilots search it for what they need on a mission. It could also carry the Relay's stories (Council decrees, the STA Tally, station news) with their history and what the terms mean, and the used-ship listings, noticeboards and galactic guide above. Today that news only scrolls past on the Relay ticker, and nothing in the game explains its terms.
+- **Ship's radio** (parked 2026-11-25, not designed yet): music in the cockpit without the game streaming anything. The middle screen shows what's playing and offers play/pause and skip, by controlling the pilot's own player (MPRIS on Linux, AppleScript for Music and Spotify on macOS), so YouTube Music in a browser, Spotify and the rest all work and the music stays the pilot's. Optionally, in-game radio stations of royalty-free or commissioned tracks. Not YouTube inside the game: its terms allow only its own embedded web player (at least 200×200, ads and branding intact, no audio-only), which would mean building a web browser into the game, and the middle screen is 178 px high.
 
 ## Phase 8 — 1.0 The frontier
 

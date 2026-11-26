@@ -217,9 +217,57 @@ FLIGHT_KEYS = ('call_hint', 'wave_off', 'decline', 'reoffer_later', 'step_course
                'step_dock', 'call_attack', 'call_fuel', 'call_lost', 'call_course')
 
 
+# The note he leaves once the licence is issued: one page of his docked panel a line, shown in order.
+NOTE_FACE = 'amused'
+NOTE_LINES = (
+    "Well, rookie. The STA has made it official: you're a licensed Trade Dog. Varga doesn't sign many, so I'd "
+    "frame it. I'd have said this in person, but you know me and goodbyes.",
+    "Training's never free, and I've settled my account for yours. Call it my fee. Forty years in this trade "
+    "teaches a man to collect, and I was always thorough with the paperwork.",
+    "I've left you what a pilot needs to start: the basic ship, 400 credits, a tonne of food in the hold and a "
+    "full tank. Same as I started with. More, frankly.",
+    "You're on your own now. If you've questions, you can always send me a message. "
+    "Clear skies, full holds. Herbert.",
+)
+
+
 class Said(str):
     """A line he said: the text, plus which line it was and the face he wore saying it."""
     key = face = None
+
+
+# His four short lessons, asked for from the licence screen: (intro, step lines..., done line). Said together
+# (the docked panel holds them all; the flight card shows the last), so the step (its last) stands on its own.
+LESSONS = {
+    'combat': ("Pirates turn up in flight, when you've something worth having. A bounty is 35 cr a head.",
+               "SPACE fires the lasers, M a missile if you've bought one. Nose on him, trigger down.",
+               "Well fought. I'd have done it quicker, but I'd have been younger."),
+    'scooping': ("Fuel / cargo scoops are 525 cr at outfitting (U on the VMS screen): ore, canisters, even the sun.",
+                 "Under 50, within 260 m of ore: the scoops draw it in. Mining laser, 800 cr: optional.",
+                 "Ore in the hold. An honest living, rocks, if not a quick one."),
+    'dsc': ("A DSC comms console is 450 cr at outfitting, tech 3 and up. Somebody's always worse off.",
+            "Fitted, alerts show on the Distress tab: Ctrl+5 for the comms page. Acknowledge one to track it.",
+            "There, you heard one. Whether you go is your own business."),
+    'rescue': ("A disabled ship shows as a gold contact. Close within 1,500 m and press N to hail it.",
+               "To repair: within 350 m, under 30 speed, select it (5), then 8 and H. R is for your own ship.",
+               "Another ship still flying. Do try to remember who fixed it."),
+}
+LESSON_FACES = ('serious', 'speaking', 'amused')   # intro, step, done
+
+
+def lesson_lines(skill, step=None):
+    """His lesson for a skill: step None is the whole lesson (intro and steps); 0 is the intro; len-1 the done line
+    (so step -1 is it too). Each line is a Said carrying its face. Unknown skill: nothing."""
+    parts = LESSONS.get(skill)
+    if not parts: return []
+    picks = parts[:-1] if step is None else [parts[step]]
+    said = []
+    faces = LESSON_FACES if step is None else (LESSON_FACES[step],)
+    for text, face in zip(picks, faces):
+        line = Said(text)
+        line.key, line.face = 'lesson_'+skill, face
+        said.append(line)
+    return said
 
 
 # What he says when the game hasn't told him a name.

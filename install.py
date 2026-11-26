@@ -59,8 +59,8 @@ def install_mac_app(target):
 
 
 # Everything the installed game runs from. test_deploy checks every module the game imports is listed here.
-GAME_FILES = ('riftdogs.py', 'startup.py', 'presence.py', 'market.py', 'economy.py', 'council.py', 'tally.py',
-              'save_sync.py', 'seal.py', 'update.py', 'payments.py', 'comms.py', 'checkin.py', 'herbert.py', 'herbert_view.py', 'stations.py', 'cockpit.py', 'LICENSE', 'README.md', 'PRIVACY.md', 'TERMS.md')
+GAME_FILES = ('riftdogs.py', 'startup.py', 'presence.py', 'market.py', 'economy.py', 'council.py', 'licence.py', 'qr.py', 'tally.py',
+              'save_sync.py', 'seal.py', 'update.py', 'payments.py', 'comms.py', 'checkin.py', 'examiner.py', 'herbert.py', 'herbert_view.py', 'stations.py', 'cockpit.py', 'LICENSE', 'README.md', 'PRIVACY.md', 'TERMS.md')
 
 
 def recorded_source(source):
@@ -82,7 +82,7 @@ def install():
     splash = source/'assets/riftdogs-splash.bmp.gz'
     if splash.resolve() != (assets/splash.name).resolve():
         shutil.copy2(splash,assets/splash.name)
-    for portrait in sorted((source/'assets').glob('herbert-*.bmp.gz')):
+    for portrait in sorted(p for who in ('herbert','varga') for p in (source/'assets').glob(f'{who}-*.bmp.gz')):
         if portrait.resolve() != (assets/portrait.name).resolve():
             shutil.copy2(portrait,assets/portrait.name)
     icon = source/'assets/riftdogs-icon.png'

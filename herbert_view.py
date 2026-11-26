@@ -5,6 +5,7 @@ import gzip
 from pathlib import Path
 
 import cockpit
+import examiner
 from herbert import FACES
 
 ASSETS = Path(__file__).resolve().parent/'assets'
@@ -13,6 +14,11 @@ ASSETS = Path(__file__).resolve().parent/'assets'
 GREEN, GOLD = (68, 227, 182), (255, 206, 113)
 CREAM, ORANGE, BG = (243, 230, 200), (224, 108, 40), (4, 9, 18)
 LINE_H, PAD = 21, 14
+STA_BLUE = (127, 167, 198)
+
+# Who is on screen: key -> (name, frame colour, faces, asset prefix).
+SPEAKERS = {'herbert': ('HERBERT', ORANGE, FACES, 'herbert'),
+            'varga': ('EXAMINER VARGA', STA_BLUE, examiner.FACES, 'varga')}
 
 # The docked panel: under the goods table, above the Buy/Sell buttons (y >= 668).
 MARKET_LIST = (24, 90, 860, 372)          # the goods table: names, prices, the selected row
@@ -80,14 +86,15 @@ def bind(lib, name, restype, args):
     return f
 
 
-def load_portraits(display):
-    """face -> texture, from assets/herbert-<face>.bmp.gz. A missing or bad file is left out, never an error."""
+def load_portraits(display, who='herbert'):
+    """face -> texture, from assets/<who>-<face>.bmp.gz. A missing or bad file is left out, never an error."""
     portraits = {}
     try: bind(display.sdl, 'SDL_SetHint', C.c_int, [C.c_char_p, C.c_char_p])(b'SDL_RENDER_SCALE_QUALITY', b'1')   # smooth when shrunk
     except (AttributeError, C.ArgumentError): pass
-    for face in FACES:
+    _, _, faces, prefix = SPEAKERS[who]
+    for face in faces:
         try:
-            raw = gzip.decompress((ASSETS/f'herbert-{face}.bmp.gz').read_bytes())
+            raw = gzip.decompress((ASSETS/f'{prefix}-{face}.bmp.gz').read_bytes())
             buffer = C.create_string_buffer(raw)
             rw = bind(display.sdl, 'SDL_RWFromConstMem', C.c_void_p, [C.c_void_p, C.c_int])(buffer, len(raw))
             surface = bind(display.sdl, 'SDL_LoadBMP_RW', C.c_void_p, [C.c_void_p, C.c_int])(rw, 1) if rw else None
@@ -99,7 +106,7 @@ def load_portraits(display):
     return portraits
 
 
-def _portrait(d, portraits, face, x, y, w, h):
+def _portrait(d, portraits, face, x, y, w, h, frame=CREAM):
     """The face in a cream frame, or just the frame when it is missing; scanlines over it when it is there."""
     texture = portraits.get(face)
     d.fill(x, y, w, h, BG)
@@ -109,24 +116,27 @@ def _portrait(d, portraits, face, x, y, w, h):
         d.color(d.r, 0, 0, 0, 55)
         for row in range(y+1, y+h, 3): d.drawline(d.r, x, row, x+w-1, row)
         bind(d.sdl, 'SDL_SetRenderDrawBlendMode', C.c_int, [C.c_void_p, C.c_int])(d.r, 0)
-    d.rect(x, y, w, h, CREAM)
+    d.rect(x, y, w, h, frame)
 
 
-def _title(d, x, y, small=False):
-    if not small: d.text(x, y, 'COMMS //', ORANGE); x += 9*cockpit.CHAR_W
-    d.text(x, y, 'HERBERT', GOLD)
+def _title(d, x, y, small=False, who='herbert'):
+    name, colour = SPEAKERS[who][:2]
+    if not small: d.text(x, y, 'COMMS //', ORANGE if who == 'herbert' else colour); x += 9*cockpit.CHAR_W
+    d.text(x, y, name, GOLD if who == 'herbert' else CREAM)
 
 
-def draw_panel(d, portraits, face, lines, choices, selected):
+def draw_panel(d, portraits, face, lines, choices, selected, who='herbert'):
     """The docked comms panel. Returns [((x, y, w, h), index)] for each choice's button."""
     px, py, pw, ph = PANEL
     d.fill(px, py, pw, ph, BG)
-    d.rect(px, py, pw, ph, ORANGE)
-    d.rect(px+2, py+2, pw-4, ph-4, (96, 52, 24))
+    colour = SPEAKERS[who][1]
+    inner = (96, 52, 24) if who == 'herbert' else tuple(c*2//5 for c in colour)
+    d.rect(px, py, pw, ph, colour)
+    d.rect(px+2, py+2, pw-4, ph-4, inner)
     _portrait(d, portraits, face, px+PAD, py+PAD, *PANEL_PORTRAIT)
     x0 = px+PAD*2+PANEL_PORTRAIT[0]+PAD-PAD//2
-    _title(d, x0, py+10)
-    d.line(x0, py+36, px+pw-16, py+36, (96, 52, 24))
+    _title(d, x0, py+10, who=who)
+    d.line(x0, py+36, px+pw-16, py+36, inner)
     rows = [row for line in lines for row in wrap(line, PANEL_CHARS)][-PANEL_ROWS:]
     for i, row in enumerate(rows): d.text(x0, py+42+i*LINE_H, row, CREAM)
     hits, x, y = [], x0, py+134
@@ -142,16 +152,16 @@ def draw_panel(d, portraits, face, lines, choices, selected):
     return hits
 
 
-def draw_card(d, portraits, face, text, rect=CARD):
+def draw_card(d, portraits, face, text, rect=CARD, who='herbert'):
     """The small card shown over the canopy or the chart while flying."""
     x, y, w, h = rect
     d.fill(x, y, w, h, BG)
-    d.rect(x, y, w, h, ORANGE)
+    d.rect(x, y, w, h, SPEAKERS[who][1])
     px, py = x+PAD//2, y+(h-CARD_PORTRAIT[1])//2
     _portrait(d, portraits, face, px, py, *CARD_PORTRAIT)
     tx = px+CARD_PORTRAIT[0]+PAD-4
     titled = _titled(rect)
-    if titled: _title(d, tx, y+3, small=True)
+    if titled: _title(d, tx, y+3, small=True, who=who)
     chars, rows = card_chars(rect), wrap(text, card_chars(rect))
     if len(rows) > card_rows(rect):
         rows = rows[:card_rows(rect)]

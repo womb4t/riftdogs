@@ -1,3 +1,14 @@
+# 0.15.0 — the Trade Dog Licence
+
+- **The Trade Dog Licence.** A licence from the Sovereign Trade Assembly (STA) says you can fly. Open it from VMS, then D.
+- **A logbook of nine skills**: Trading, Jump flight, Non-jump flight, Combat, Mining and scooping, Views, Rescue, DSC and Comms. They're scored quietly as you play; the licence screen shows which you've shown.
+- **Herbert's lessons.** Four short ones, asked for from the licence screen: combat, mining and scooping, DSC and rescue.
+- **Examiner Varga's check flight.** Launch and take radio station control, fly to a marker beacon without the jump drive, answer a staged distress call on DSC, then dock against the clock.
+- **The card and the QR code.** Online pilots are issued the licence under their ship number. The card shows a QR code that links to riftdogs.com/pilot/ and your number, and you can switch it between Public and Private.
+- **Reputation stars** on the card.
+- **Herbert retires once you're licensed.**
+- Server: update the server before (or with) this release. An older server rejects saves from licensed pilots.
+
 # 0.14.1 — playtest fixes
 
 - **Your speed is in the forward view**, bottom left, where you're looking. It turns red and shows the limit (SPEED 40 / 25) when you're cleared to dock but going too fast.

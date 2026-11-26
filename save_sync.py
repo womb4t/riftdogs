@@ -245,6 +245,14 @@ class RemoteSave:
             if error.code == 401: raise RuntimeError('Server rejected the player token') from None
             raise RuntimeError(f'Server returned HTTP {error.code}') from None
 
+    def licence(self, action, public):
+        """POST /v1/licence: 'issue' (idempotent), 'public' (what the profile shows) or 'refresh' (re-read, with fresh
+        stars). Blocking: the game runs it on a worker thread. It settles nothing, so uploads are not held.
+        Returns {number, issued, stars, public}. Refused on a 4xx (its .message is the server's words: 'No licence'
+        for a refresh before issue); OSError/RuntimeError/ValueError when the server can't be reached or answers oddly."""
+        body = dict(action=action) if action == 'refresh' else dict(action=action,public=public)
+        return self.request(body,'/v1/licence',method='POST')
+
     def metadata(self, saved_hash):
         with self.meta_lock:
             atomic(self.meta_path,canonical(self.meta(revision=self.revision,hash=saved_hash,settle_unknown=self.settle_unknown)))

@@ -24,7 +24,10 @@ import subprocess
 import textwrap
 from market import Market, demand_factor, quote_price
 import economy
+import examiner
 import herbert
+import licence
+import qr
 import herbert_view
 import payments
 import seal
@@ -32,7 +35,7 @@ import stations
 import cockpit
 import secrets
 
-VERSION = '0.14.1'
+VERSION = '0.15.0'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
@@ -154,9 +157,16 @@ ANY_CTRL = {ord('n'): ord('-'), ord('m'): ord('3')}   # quick note; full screen 
 # button does what its key does; 0 Home is a key only.
 TOP_BAR = tuple(cockpit.top_bar())
 # The modes that light each key's button (5 COMMS also lights while the comms panel is open).
-TOP_BAR_LIT = {1: ('map','planet_profile'), 2: ('vms','outfit','engineering'), 3: ('money','bank','jobs','exchange'),
+TOP_BAR_LIT = {1: ('map','planet_profile'), 2: ('vms','outfit','engineering','licence'), 3: ('money','bank','jobs','exchange'),
                4: ('menu',), 5: ('comms',), 6: ('trades',), 7: ('cargo',), 8: ('engineering',), 9: ('help',)}
 BACK_BUTTON = (cockpit.CONTENT[0]+cockpit.CONTENT[2]-84, cockpit.CONTENT[1]+6, 84)   # x, y, w: the content's top-right
+# The Trade Dog Licence screen (VMS, then D): the card on the left, the document behind it on the right.
+LICENCE_CARD = (35, 92, 560, 370)   # x, y, w, h
+LICENCE_CREAM, LICENCE_NAVY, STA_BLUE = (238, 226, 198), (24, 36, 64), (127, 167, 198)
+LICENCE_ORANGE, LICENCE_RED = (222, 128, 44), (178, 52, 38)
+LICENCE_QR_MODULE = 4               # pixels a QR module; the quiet zone is 4 modules
+LICENCE_QR_AT = (LICENCE_CARD[0]+15, LICENCE_CARD[1]+100)   # the QR square's top-left (quiet zone included)
+LICENCE_DOC_X = 620                 # the document column, to the content's right edge (x 1165)
 HOLD_SCREENS = ('hyperspace', 'dead', 'prison', 'intro', 'hail', 'distress', 'departure', 'trade_deal')
 GREEN, GOLD, RED = (68, 227, 182), (255, 206, 113), (255, 112, 100)
 # The cockpit's panels: background, border, headings, quiet text and the canopy's struts.
@@ -256,7 +266,7 @@ VIEW = None
 DEAL_PAUSE = 10   # seconds without pressing B or S that end a deal (the price is held until then)
 
 # The money ledger behind Money / Reports: signed credits per category, per day, plus play time, trips and deaths.
-LEDGER_MONEY = ('trade','bounty','jobs','running','fines','rescue','destroyed')   # make up net earnings
+LEDGER_MONEY = ('trade','bounty','jobs','running','fines','rescue','destroyed','herbert')   # make up net earnings
 LEDGER_KEYS = LEDGER_MONEY+('contraband','equipment','seconds','trips','deaths')
 LEDGER_DAYS = 60
 REPORT_MIN_COMMANDERS = 3     # averages are only shown when this many commanders played in the period
@@ -295,10 +305,11 @@ def ledger_metrics(bucket):
     """Rates used to compare commanders: everything per hour played, trading also per trip."""
     hours = bucket.get('seconds',0)/3600
     net = sum(bucket.get(k,0) for k in LEDGER_MONEY)
+    earned = net-bucket.get('herbert',0)   # his one-off take is in net earnings, not in the rate a pilot earns at
     losses = -sum(bucket.get(k,0) for k in ('fines','rescue','destroyed'))
     per_hour = (lambda v: v/hours) if hours >= .05 else (lambda v: None)
     trips = bucket.get('trips',0)
-    return dict(hours=hours,net=net,losses=losses,net_hr=per_hour(net),trade_hr=per_hour(bucket.get('trade',0)),
+    return dict(hours=hours,net=net,losses=losses,net_hr=per_hour(earned),trade_hr=per_hour(bucket.get('trade',0)),
                 loss_hr=per_hour(losses),trade_trip=bucket.get('trade',0)/trips if trips else None,
                 deaths_hr=per_hour(bucket.get('deaths',0)))
 
@@ -643,6 +654,7 @@ class Pilot:
         self.storage = [dict(owned=False,rented_until=0.,cargo=[0]*len(GOODS),paid=[0]*len(GOODS)) for _ in SYSTEMS]
         self.prison = None
         self.intro_seen = False
+        self.licence = licence.new_record()   # the Trade Dog Licence logbook (licence.py)
         self.herbert = herbert.new_state()   # the old hauler's progress (herbert.py); saves without it never get his call
         self.edited = False   # set when an offline save's seal was broken; stays set (see seal.py)
         self.trade_log = []
@@ -887,6 +899,7 @@ class Pilot:
                 if key in data: setattr(candidate, key, data[key])
             if 'position' not in data: candidate.position = coordinates(candidate.system)
             if 'herbert' not in data: candidate.herbert = herbert.retired_state()   # an existing commander
+            if 'licence' not in data: candidate.licence = licence.new_record()
             if isinstance(candidate.waypoint,dict) and candidate.waypoint.get('name') in RENAMED_SYSTEMS:
                 candidate.waypoint['name'] = RENAMED_SYSTEMS[candidate.waypoint['name']]
             candidate.add_new_commodities()
@@ -926,6 +939,7 @@ class Pilot:
         if type(self.intro_seen) is not bool: raise ValueError('introduction')
         if type(self.edited) is not bool: raise ValueError('edited flag')
         if not herbert.valid_state(self.herbert): self.herbert = herbert.retired_state()
+        if not licence.valid_record(self.licence): self.licence = licence.new_record()
         if not valid_ledger(self.ledger): raise ValueError('ledger')
         if not isinstance(self.trade_log,list) or len(self.trade_log) > TRADE_LOG_SIZE: raise ValueError('trade log')
         for entry in self.trade_log:
@@ -1139,6 +1153,10 @@ class Display:
         set_clip(self.r,(C.c_int*4)(*map(int,rect)) if rect else None)
 
     def text(self, x, y, text, color=(160, 225, 213)):
+        self.big_text(x,y,text,color,1)
+
+    def big_text(self, x, y, text, color=(160, 225, 213), scale=2):
+        """Text drawn scale times its size (the one font, stretched: the licence card's large lettering)."""
         key = (str(text), color)
         if key not in self.cache:
             if len(self.cache) > 500:
@@ -1154,7 +1172,7 @@ class Display:
             self.query(tex,None,None,C.byref(w),C.byref(h))
             self.cache[key] = tex,w.value,h.value
         tex,w,h = self.cache[key]
-        rect = (C.c_int * 4)(int(x),int(y),w,h)
+        rect = (C.c_int * 4)(int(x),int(y),w*scale,h*scale)
         self.copy(self.r,tex,None,rect)
 
     def clipboard_text(self):
@@ -1331,7 +1349,9 @@ class Game:
         self.heat = 0.
         self.nav = 'station'
         self.nav_target = None
+        self.check_flight = None   # Examiner Varga's check flight while it runs; never saved
         self.rear_view = False
+        self.views_seen = dict(rear=False,target=False)
         self.planet = [-600.,240.,2400.]
         self.planet_radius = 70 + PROFILES[self.p.system][2]/100
         self.flyby_min = float('inf')
@@ -1435,6 +1455,7 @@ class Game:
         self.release_mouse()
         self.mouse_controls = False
         self.rear_view = False
+        self.views_seen = dict(rear=False,target=False)
         self.station = [0.,0.,1500.] if not self.p.deep_space else [0.,0.,1e9]
         self.station_axis = unit_vector(self.station)   # port A faces you, the hull behind it
         self.planet = [-600.,240.,2400.]
@@ -1494,6 +1515,7 @@ class Game:
         for _ in range(6):
             if mode in ('market','outfit','departure','launch_warning','bank','jobs','exchange','trade_deal','redeem','prison'): return 'market'
             if mode == 'trades': mode = 'money'; continue
+            if mode == 'licence': mode = 'vms'; continue
             if mode in ('flight','cruise','hyperspace','dead'): return mode
             if mode == 'hail': return 'flight'
             attr = {'comms':'comms_return','money':'money_return','vms':'vms_return','help':'help_return','updates':'update_return','map':'map_return','menu':'menu_return','notes':'notes_return','rename':'rename_return','intro':'intro_return','feedback':'feedback_return','planet_profile':'map_return','engineering':'engineering_return','cargo':'cargo_return'}.get(mode)
@@ -1512,6 +1534,7 @@ class Game:
                   'disabled_ship','assist_spawn_timer','dock_clearance','docking_pending','rescue_cooldown','ship_collision_cooldown')
         state = {key:getattr(self,key) for key in fields}
         if state['nav'] == 'object': state['nav'] = 'station'
+        if isinstance(state['disabled_ship'],dict) and state['disabled_ship'].get('check'): state['disabled_ship'] = None   # Varga's staged ship stays out of the save
         data = dict(vars(self.p))
         data['_session'] = dict(schema=1,commander=self.p.commander_id,saved_at=time.time(),mode=self.session_mode(),state=state)
         try:
@@ -1533,6 +1556,7 @@ class Game:
             # Don't wait on the network to quit. Uploads stay held and the local save stays as uploaded; the
             # persisted settle_unknown makes the next start take the server's copy if the settlement landed.
             self.remote_save.mark_settle_unknown()
+        self.end_check_flight('aborted',say=False)   # quitting mid-test is a fail; the attempt time was saved at booking
         self.checkpoint()
         self.running = False
 
@@ -1655,6 +1679,7 @@ class Game:
         self.update_market()
         self.surface_update_required()
         self.poll_inbox()
+        self.poll_licence()
         self.surface_rolled_back()
         self.resume_saved_payment()
         self.recheck_payment()
@@ -1671,6 +1696,7 @@ class Game:
         self.refresh_station_hostility()
         self.update_prison()
         self._update_simulation(dt)
+        self.update_check_flight(dt)
         self.update_alarm(dt)
         self.update_shared_presence()
         self._checkin_wait += dt
@@ -1708,6 +1734,7 @@ class Game:
         if not fresh.load():
             self.message = 'The server sent a save this game could not read.'
             return False
+        self.end_check_flight('aborted',say=False)
         self.p.__dict__.update(vars(fresh))
         # Trades not yet sent belong to the branch just discarded: the server must never book them.
         if getattr(self,'market_client',None): self.market_client.discard_queued()
@@ -1751,10 +1778,11 @@ class Game:
         something more important. Docked, they open his panel (all of them, with the choices for where the trip is) on
         the market screen; said on another docked screen they wait for the market, unless the pilot asked for him
         there (`asked`: Ctrl+H, Call Herbert, a choice on his panel), and never open over the launch warning. Flying,
-        the newest goes on his card: while guiding it stays until the next line (a step, even one asked for again),
-        anything else (an on-call answer, a farewell) for HERBERT_CARD_SECONDS. Flying, the middle screen never turns
+        the newest goes on his card: while guiding or giving a lesson it stays until the next line (a step, even one
+        asked for again; a lesson's done line is timed, the lesson cleared first), anything else (an on-call answer, a farewell) for HERBERT_CARD_SECONDS. Flying, the middle screen never turns
         by itself: his call lights the Comms page, which turns to it only when the pilot asked for him."""
         if not lines: return
+        self.herbert_lesson_yields()
         for line in lines: self.comms.local('HERBERT',str(line),channel='direct')   # plain text: the log keeps str only
         calling = herbert.CALL_LINE in lines
         if self.session_mode() == 'market':
@@ -1768,9 +1796,9 @@ class Game:
         else:
             if calling and asked and self.mode in COMMS_PAGE_MODES: self.select_page('comms')   # the pilot's own choice
             last = lines[-1]
-            timed = self.p.herbert['stage'] != 'guiding'
+            timed = self.p.herbert['stage'] != 'guiding' and self.p.licence['lesson'] is None   # a lesson stays, as guiding
             self.herbert_panel = self.herbert_pending = None
-            self.herbert_card = dict(text=str(last),face=getattr(last,'face',None) or 'speaking',
+            self.herbert_card = dict(text=str(last),face=getattr(last,'face',None) or 'speaking',who='herbert',
                                      until=time.monotonic()+HERBERT_CARD_SECONDS if timed else None)
         if message_line and self.herbert_may_take_message_line():
             self._message = 'Herbert: '+str(lines[-1])   # past the setter: his words are never a ship announcement
@@ -1780,12 +1808,29 @@ class Game:
 
     def herbert_show(self, lines, face=None):
         """Open his docked panel on these lines, with the face of the last and the choices for the stage now."""
+        self.herbert_lesson_yields()
         stage = self.p.herbert['stage']
-        choices = self.HERBERT_OFFER if stage == 'offered' else self.HERBERT_STEP if stage == 'guiding' else ['Got it']
+        lesson = self.p.licence['lesson'] is not None
+        choices = self.HERBERT_OFFER if stage == 'offered' else self.HERBERT_STEP if stage == 'guiding' or lesson else ['Got it']
         lines,face = [str(line) for line in lines],face or getattr(lines[-1],'face',None) or 'speaking'
         if stage == 'offered': self.herbert_offer_shown = (lines,face)   # for showing it again unanswered
         self.herbert_pending = None
-        self.herbert_panel = dict(lines=lines,face=face,choices=list(choices),selected=0,hits=[],mode=self.mode)
+        self.herbert_panel = dict(lines=lines,face=face,choices=list(choices),selected=0,hits=[],mode=self.mode,who='herbert')
+
+    def varga_say(self, key, untimed=False, **fmt):
+        """Examiner Varga's line for this key (placeholders filled from fmt), as Herbert's are shown: docked, her panel
+        (a Got it button) on the screen the pilot is on, except over the launch warning; flying, her card for
+        HERBERT_CARD_SECONDS, or (`untimed`, during her check flight) until her next line or the end of the test.
+        She goes in the comms log too. Herbert's own panel and pending lines are left alone."""
+        text,face = examiner.line(key,**fmt),examiner.face_for(key)
+        self.comms.local('EXAMINER VARGA',text,channel='direct')
+        if self.session_mode() == 'market':
+            self.herbert_card = None
+            if self.mode != 'launch_warning':
+                self.herbert_panel = dict(lines=[text],face=face,choices=['Got it'],selected=0,hits=[],mode=self.mode,who='varga')
+        else:
+            self.herbert_panel = None
+            self.herbert_card = dict(text=text,face=face,who='varga',until=None if untimed else time.monotonic()+HERBERT_CARD_SECONDS)
 
     def herbert_waiting(self, lines, face=None):
         """Lines kept for his panel until the pilot is on the market screen, with the stage they were said in."""
@@ -1798,7 +1843,9 @@ class Game:
         panel = self.herbert_panel
         if panel is not None and panel.get('mode',self.mode) != self.mode:
             self.herbert_panel = None
+            if panel.get('who','herbert') != 'herbert': return None   # hers does not wait for the market
             self.herbert_pending = self.herbert_waiting(panel['lines'],panel['face'])
+            if panel.get('more'): self.herbert_pending['more'] = panel['more']   # the rest of his note
         return self.herbert_panel
 
     def herbert_reopen_offer(self):
@@ -1814,11 +1861,14 @@ class Game:
         if panel is None or not 0 <= index < len(panel['choices']): return
         label = panel['choices'][index]
         self.herbert_panel = None
+        if panel.get('more'): return self.herbert_note(panel['more'])   # the next page of his note
         if label == self.HERBERT_OFFER[0]:
             self.herbert_plan()
             self.herbert_say(self.tutor.accept(self.herbert_context()),asked=True)   # answered where the pilot is
         elif label == self.HERBERT_OFFER[1]: self.herbert_say(self.tutor.decline(self.herbert_context()),asked=True)
-        elif label == 'Say again': self.call_herbert()
+        elif label == 'Say again':
+            if self.p.licence['lesson']: self.herbert_say(herbert.lesson_lines(self.p.licence['lesson']),message_line=False,asked=True)
+            else: self.call_herbert()
         elif label == 'Wave him off': self.wave_herbert_off()
 
     HERBERT_MODIFIERS = range(1073742048,1073742056)   # Ctrl, Shift, Alt and GUI pressed alone
@@ -1861,27 +1911,31 @@ class Game:
         else: self.herbert_panel = self.herbert_pending = None
         card = self.herbert_card
         if card and card['until'] is not None and time.monotonic() >= card['until']: self.herbert_card = None
+        if docked: self.herbert_note()
         if not (docked and self.mode == 'market' and self.herbert_panel is None): return
         pending,self.herbert_pending = getattr(self,'herbert_pending',None),None
-        if pending and pending['stage'] == self.p.herbert['stage']: self.herbert_show(pending['lines'],pending['face'])
+        if pending and pending['stage'] == self.p.herbert['stage']:
+            self.herbert_show(pending['lines'],pending['face'])
+            if pending.get('more'): self.herbert_panel['more'] = pending['more']
         elif seen != 'market' and self.tutor.offering(): self.herbert_reopen_offer()
 
     def herbert_card_hidden(self):
         """The card gives way to the alarm banner, an incoming-fire warning and the thermal warning."""
         return bool(self.alarm) or bool(self.enemy_shot) or self.heat >= 70
 
-    def herbert_portraits(self):
-        """His faces as textures, loaded once per display on first use ({} without a real display). Loading sets SDL's
+    def herbert_portraits(self, who='herbert'):
+        """His faces (or hers, who='varga') as textures, loaded once per display on first use ({} without a real display). Loading sets SDL's
         scale-quality hint for the portraits only: it is put back so text textures made afterwards stay crisp."""
         d = self.d
         if not isinstance(d,Display): return {}
-        cached = getattr(self,'_herbert_portraits',None)
+        cache = self.__dict__.setdefault('_herbert_portraits',{})
+        cached = cache.get(who)
         if cached and cached[0] is d: return cached[1]
         hint = b'SDL_RENDER_SCALE_QUALITY'
         before = bind(d.sdl,'SDL_GetHint',C.c_char_p,[C.c_char_p])(hint)
-        portraits = herbert_view.load_portraits(d)
+        portraits = herbert_view.load_portraits(d,who)
         bind(d.sdl,'SDL_SetHint',C.c_int,[C.c_char_p,C.c_char_p])(hint,before if before is not None else b'0')
-        self._herbert_portraits = (d,portraits)
+        cache[who] = (d,portraits)
         return portraits
 
     def draw_herbert(self):
@@ -1890,12 +1944,12 @@ class Game:
         base = self.session_mode()
         panel = self.herbert_panel_here() if base == 'market' else None
         if panel is not None and base == 'market' and not getattr(self,'story',None):   # a story window stays on top
-            panel['hits'] = herbert_view.draw_panel(self.d,self.herbert_portraits(),panel['face'],panel['lines'],panel['choices'],panel['selected'])
+            panel['hits'] = herbert_view.draw_panel(self.d,self.herbert_portraits(panel.get('who','herbert')),panel['face'],panel['lines'],panel['choices'],panel['selected'],who=panel.get('who','herbert'))
         card = self.herbert_card
         if card is None or base == 'market' or self.herbert_card_hidden(): return
         if card['until'] is not None and time.monotonic() >= card['until']: return
         rect = herbert_view.card_rect_for(self.mode)
-        if rect: herbert_view.draw_card(self.d,self.herbert_portraits(),card['face'],card['text'],rect)
+        if rect: herbert_view.draw_card(self.d,self.herbert_portraits(card.get('who','herbert')),card['face'],card['text'],rect,who=card.get('who','herbert'))
 
     def herbert_may_take_message_line(self):
         """Docked, only the plain "Docked" line gives way (never customs, a fine or a flare notice); anywhere, a
@@ -1970,6 +2024,573 @@ class Game:
         profit,self.sale_profit,self.sale_pending = self.sale_profit,0,False
         self.herbert_event('sold',profit=profit)
 
+    def licence_skill(self, skill):
+        """Log a Trade Dog Licence logbook skill the first time it happens, and save quietly."""
+        place = 'deep space' if self.p.deep_space else SYSTEMS[self.p.system][0]
+        if not licence.record_skill(self.p.licence,skill,time.time(),place): return
+        self.checkpoint()
+        if not self.alert or self.alert['text'] == self.message:   # joins the message already up (even one that raised its own alert); never pushes an unrelated warning off
+            note = f'Logbook: {licence.SKILL_NAMES[skill]} recorded.'
+            self.message = f'{self.message} {note}' if self.message else note
+        self.herbert_lesson_done(skill)
+
+    def herbert_lesson_yields(self):
+        """A lesson in hand gives way to his first trip: once he offers it or guides it, the lesson is dropped."""
+        if self.p.licence['lesson'] and self.p.herbert['stage'] in ('offered','guiding'):
+            self.p.licence['lesson'] = None
+
+    def herbert_lesson_done(self, skill):
+        """Ends Herbert's lesson for this skill: he says the done line (the lesson is cleared first, so his panel
+        offers just Got it). A lesson for another skill carries on."""
+        rec = self.p.licence
+        if rec['lesson'] != skill: return
+        rec['lesson'] = None
+        self.checkpoint()
+        self.herbert_say(herbert.lesson_lines(skill,-1),message_line=False)
+
+    def licence_view(self, which):
+        """Views skill: the rear view and a picked target in one flight."""
+        self.views_seen[which] = True
+        if all(self.views_seen.values()): self.licence_skill('views')
+
+    # --- Examiner Varga's check flight: four marked parts in the normal flight loop (see licence.CHECK_PARTS) ---
+    CHECK_BRIEF_DELAY = 3.     # seconds from her word on one part to her brief for the next
+    CHECK_ASIDE_GAP = 4.       # Herbert never speaks while her card is newer than this
+    CHECK_BEACON_RANGE = 6000.
+    CHECK_BEACON_OFF_AXIS = 60.   # degrees off the station's launch axis
+    CHECK_BEACON_REACHED = 300.
+    CHECK_DISTRESS_BEYOND = 3000.
+
+    def book_check_flight(self):
+        """Docked only: book Varga's check flight, or she says why not (a skill still to show, the wait before a
+        retake). Booking counts as the attempt (saved now), so quitting mid-test still means the 30-minute wait."""
+        if self.session_mode() != 'market' or self.p.deep_space:
+            self.message = 'Book the check flight while docked.'
+            return
+        if self.check_flight:
+            self.message = 'Your check flight is under way.'
+            return
+        rec,now = self.p.licence,time.time()
+        if not self.licence_online() and not rec['passed']: return self.varga_say('online_only')   # a true offline save: no licence
+        ok,reason = licence.can_book(rec,now)
+        if not ok:
+            missing = [s for s in licence.SKILLS if rec['skills'].get(s) is None]
+            if rec['passed']: self.message = reason
+            elif missing: self.varga_say('not_ready',skill=licence.SKILL_NAMES[missing[0]])
+            else: self.varga_say('wait',minutes=max(1,math.ceil((licence.RETAKE_SECONDS-(now-rec['last_attempt']))/60)))
+            return
+        rec['last_attempt'] = now
+        self.check_flight = dict(part='launch',started=now,part_started=0.,marks={},beacon=None,
+                                 clock=0.,system=self.p.system,launched=None,radioed=None,jumped=False,acked=None,
+                                 said=[],varga_at=0.,varga_card=None,aside=False,asides=random.sample(examiner.HERBERT_ASIDES,len(examiner.HERBERT_ASIDES)))
+        self.checkpoint()
+        self.check_say('booked')
+
+    def check_objects(self):
+        """The scene's own objects that fly with the world (the marker beacon)."""
+        cf = self.check_flight
+        return [cf['beacon']] if cf and cf['beacon'] is not None else []
+
+    def check_say(self, key):
+        """Varga during her test: her card stays until her next line (untimed)."""
+        self.varga_say(key,untimed=True)
+        cf,card = self.check_flight,self.herbert_card
+        if cf:
+            cf['varga_at'] = cf['clock']
+            cf['varga_card'] = dict(card) if card and card.get('who') == 'varga' else None   # hers to put back
+
+    def check_ship(self):
+        """The staged distress ship, while it is still there."""
+        ship = self.disabled_ship
+        return ship if isinstance(ship,dict) and ship.get('check') else None
+
+    def check_flight_radio(self):
+        """A docking request or a sent radio message: station control called, for the launch part."""
+        cf = self.check_flight
+        if cf and cf['part'] == 'launch' and cf['launched'] is not None and cf['radioed'] is None: cf['radioed'] = cf['clock']
+
+    def update_check_flight(self, dt):
+        """Each frame while the test runs: its clock, the aborts, the part under way, her queued lines, his aside."""
+        cf = self.check_flight
+        if not cf: return
+        cf['clock'] += dt
+        now = cf['clock']
+        if (self.mode in ('dead','hyperspace') or self.p.hull <= 0 or self.p.deep_space or self.p.system != cf['system']):
+            return self.end_check_flight('aborted')
+        self.assist_spawn_timer = 1e9   # no other distress call while she is examining
+        flying = self.session_mode() in ('flight','cruise')
+        part,elapsed = cf['part'],now-cf['part_started']
+        if part == 'launch':
+            if cf['launched'] is None:
+                if flying:
+                    cf['launched'] = now
+                    self.check_say('brief_launch')
+            elif cf['radioed'] is not None or now-cf['launched'] >= 60:
+                mark = (5 if cf['launched'] <= 120 else 0)+(5 if cf['radioed'] is not None and cf['radioed']-cf['launched'] <= 60 else 0)
+                self.check_part_done(mark)
+        elif part == 'beacon':
+            if self.mode in ('cruise','hyperspace') or self.jump_charge: cf['jumped'] = True
+            if self.mode == 'flight' and math.sqrt(sum(v*v for v in cf['beacon'])) <= self.CHECK_BEACON_REACHED:
+                mark = 0 if cf['jumped'] else max(2,10-math.ceil(max(0.,elapsed-240)/20))
+                self.check_part_done(mark)
+        elif part == 'distress':
+            ship = self.check_ship()
+            if ship and ship['acknowledged'] and cf['acked'] is None: cf['acked'] = now
+            acked = 4 if cf['acked'] is not None and cf['acked']-cf['part_started'] <= 60 else 0
+            reach = math.sqrt(sum(v*v for v in ship['object'][:3])) if ship else None
+            if ship is None or (time.time() >= ship['lost_at'] and reach > 1500): self.check_part_done(acked)
+            elif reach <= 1500: self.check_part_done(acked+(6 if time.time() < ship['lost_at'] else 0))
+        elif part == 'dock' and elapsed > 600: self.check_part_done(0)
+        cf = self.check_flight
+        if not cf: return
+        while cf['said'] and cf['said'][0][0] <= now: self.check_say(cf['said'].pop(0)[1])
+        if (not cf['aside'] and flying and not cf['said'] and now-cf['varga_at'] >= self.CHECK_ASIDE_GAP
+                and cf['asides'] and not self.p.licence['departed']):
+            cf['aside'] = True
+            self.herbert_card = dict(text=cf['asides'].pop(),face='speaking',who='herbert',until=time.monotonic()+HERBERT_CARD_SECONDS)
+        # One card slot: once Herbert's card (an aside, a tutor line) is gone or timed out, her latest line comes back.
+        card = self.herbert_card
+        if (flying and cf['varga_card'] and (card is None or card.get('who') != 'varga')
+                and (card is None or (card['until'] is not None and time.monotonic() >= card['until']))):
+            self.herbert_card = dict(cf['varga_card'])
+
+    def check_part_done(self, mark):
+        """Mark the part under way; her word on it, then the next part (its brief a moment later), or the result."""
+        cf = self.check_flight
+        part = cf['part']
+        cf['marks'][part] = max(0,min(licence.PART_MAX,int(mark)))
+        following = licence.CHECK_PARTS.index(part)+1
+        if following >= len(licence.CHECK_PARTS): return self.end_check_flight('done')
+        self.check_say('part_good' if mark >= 7 else 'part_poor')
+        part = cf['part'] = licence.CHECK_PARTS[following]
+        cf['part_started'],cf['aside'] = cf['clock'],False
+        cf['said'].append((cf['clock']+self.CHECK_BRIEF_DELAY,'brief_'+part))
+        if part == 'beacon': self.check_place_beacon()
+        elif part == 'distress': self.check_stage_distress()
+        elif part == 'dock':
+            self.check_remove_ship()   # left behind for the station service
+            if self.nav == 'object' and self.nav_target and self.nav_target[0] is cf['beacon']: self.nav,self.nav_target = 'station',None
+
+    def check_place_beacon(self):
+        """The marker beacon: 6 km from the station, 60 degrees off its launch axis, the nav marker on it."""
+        out = [-a for a in self.station_axis]   # out of port A, the way you launch
+        side = [random.uniform(-1,1) for _ in range(3)]
+        dot = sum(a*b for a,b in zip(side,out))
+        side = unit_vector([a-dot*b for a,b in zip(side,out)]) if any(abs(a-dot*b) > 1e-6 for a,b in zip(side,out)) else [1.,0.,0.]
+        angle = math.radians(self.CHECK_BEACON_OFF_AXIS)
+        direction = [o*math.cos(angle)+v*math.sin(angle) for o,v in zip(out,side)]
+        beacon = [c+d*self.CHECK_BEACON_RANGE for c,d in zip(self.station,direction)]
+        self.check_flight['beacon'] = beacon
+        self.nav,self.nav_target = 'object',(beacon,'BEACON')
+
+    def check_stage_distress(self):
+        """The staged distress call: a ship 3 km on from the beacon, calling on DSC now."""
+        beacon = self.check_flight['beacon']
+        self.spawn_distress()
+        ahead = unit_vector([b-s for b,s in zip(beacon,self.station)])
+        ship = self.disabled_ship
+        ship['object'] = [b+a*self.CHECK_DISTRESS_BEYOND for b,a in zip(beacon,ahead)]
+        ship['check'] = True
+
+    def check_remove_ship(self):
+        ship = self.check_ship()
+        if ship is None: return
+        if self.ship_target is ship['object']: self.ship_target = None
+        self.disabled_ship = None
+
+    def check_flight_docked(self, speed, slot):
+        """Docked during the test: the dock part's mark (from leaving the distress ship), or, docked before it, the
+        test ends here with the parts not flown at 0."""
+        cf = self.check_flight
+        if not cf: return
+        if cf['part'] == 'dock':
+            elapsed = cf['clock']-cf['part_started']
+            if elapsed > 600: mark = 0
+            else:
+                mark = 10-math.ceil(max(0.,elapsed-300)/30)-(3 if speed > 20 else 0)
+                if speed > DOCK_SPEED_LIMIT or slot > 14: mark = 1   # docked, but not inside her limits
+                mark = max(1,mark)
+            return self.check_part_done(mark)
+        self.end_check_flight('done')
+
+    def end_check_flight(self, reason, say=True):
+        """End the test ('done': marked, the attempt stored and maybe the licence earned; 'aborted': a fail, nothing
+        marked). The scene goes: the beacon, the staged ship, her untimed card. Nothing of it was ever saved."""
+        cf,self.check_flight = self.check_flight,None
+        if not cf: return
+        if self.nav_target and self.nav_target[0] is cf['beacon']: self.nav,self.nav_target = 'station',None
+        self.check_remove_ship()
+        self.assist_spawn_timer = self.distress_delay()
+        card = self.herbert_card
+        if card and card.get('who') == 'varga' and card['until'] is None: self.herbert_card = None
+        if reason == 'done':
+            rec = self.p.licence
+            passed = licence.finish_check(rec,{p:cf['marks'].get(p,0) for p in licence.CHECK_PARTS},time.time())
+            if passed:
+                # Saved even while the inbox settles (checkpoint() then saves nothing): put back until a save goes through.
+                self.hold_licence(passed=True,check=json.loads(json.dumps(rec['check'])),last_attempt=rec['last_attempt'])
+                self.save_licence()
+            else: self.checkpoint()
+            if say: self.varga_say('pass' if passed else 'fail')
+            if passed: self.request_licence('issue')   # the pass is in the save first: unanswered, licence_sync() asks again
+        elif say: self.varga_say('aborted')
+
+    def herbert_departs(self):
+        """Once the licence is issued, Herbert leaves with everything above the basics and leaves a note. It happens
+        once: the departed flag is held with the other licence fields until a save goes through (save_licence puts
+        the whole departure back on a copy that lost it), and a save without it means the next issue departs."""
+        if self.p.licence['departed'] or (getattr(self,'licence_unsaved',None) or {}).get('departed'): return
+        self.herbert_leave()
+        self.hold_licence(departed=True,note_pending=True,lesson=None)
+        self.save_licence()
+        if self.session_mode() == 'market' and self.mode != 'launch_warning': self.herbert_note()
+        else: self.notice('A note from Herbert is waiting at the station.')
+
+    def herbert_leave(self):
+        """His departure on the pilot as it is now: the basics left, what he took on his ledger line, his stage over."""
+        p = self.p
+        out = licence.departure(vars(p))
+        for key,value in out['fields'].items(): setattr(p,key,value)
+        p.book('herbert',-out['taken'])
+        p.herbert['stage'] = 'gone'
+        p.licence.update(departed=True,lesson=None)
+        self.cloaked,self.jamming = False,0.   # the kit that did it has gone with him
+        if self.check_flight is None: self.herbert_card = None
+
+    def herbert_note(self, pages=None):
+        """His note on his docked panel, a page at a time ("Got it" turns to the next; the comms log has it all).
+        Opened when the pilot is on a docked screen with no panel up; then it is no longer pending."""
+        if pages is None:
+            if not self.p.licence['note_pending'] or self.herbert_panel is not None: return
+            if self.session_mode() != 'market' or self.mode in ('launch_warning','prison') or getattr(self,'story',None): return
+            # Cleared with a held save: a crash before any save goes through can show the note once more (accepted).
+            pages = list(herbert.NOTE_LINES)
+            for line in pages: self.comms.local('HERBERT',line,channel='direct')
+            self.comms.mark_read()   # read on his panel
+            self.hold_licence(note_pending=False)
+            self.save_licence()
+        self.herbert_show([pages[0]],herbert.NOTE_FACE)
+        self.herbert_panel['more'] = list(pages[1:])
+
+    # --- The Trade Dog Licence from the STA (the server): asked for on a pass, or on reconnecting ---
+    LICENCE_RETRY = 60.   # seconds before asking again when the server couldn't be reached
+
+    def licence_online(self):
+        """A pilot on a server (reachable or not). A true offline save never gets a licence."""
+        return getattr(self,'remote_save',None) is not None
+
+    def licence_qr(self):
+        """The card carries the riftdogs.com QR code only for a licence from the official server."""
+        from startup import DEFAULT_SERVER
+        remote = getattr(self,'remote_save',None)
+        url = getattr(remote,'url',None) if remote is not None else None
+        normal = lambda u: u.strip().rstrip('/').lower()
+        return type(url) is str and normal(url) == normal(DEFAULT_SERVER)
+
+    def licence_busy(self):
+        return getattr(self,'licence_job',None) is not None
+
+    def request_licence(self, action='issue'):
+        """Ask the STA for the licence ('issue', idempotent), to change what it shows ('public'), or to re-read it
+        ('refresh'), on a worker thread: the game never waits on the network, and since nothing is settled the
+        uploads carry on. poll_licence() applies the answer on the game thread. Offline, nothing happens; asked
+        while another request is out, it goes after that one. Returns True when a request started."""
+        remote = getattr(self,'remote_save',None)
+        if remote is None: return False
+        if self.licence_busy():
+            # One issue at a time (it ends in the departure); a queued issue is not replaced by a lesser request.
+            if action == 'issue' and self.licence_job['action'] == 'issue': return False
+            if getattr(self,'licence_queued',None) != 'issue': self.licence_queued = action
+            return False
+        public = dict(self.p.licence['public'])
+        job = dict(action=action,done=threading.Event(),reply=None,error=None)
+        def run():
+            try: job['reply'] = remote.licence(action,public)
+            except Exception as error: job['error'] = error   # any failure must still finish the job
+            finally: job['done'].set()
+        self.licence_job = job
+        threading.Thread(target=run,name='licence',daemon=True).start()
+        return True
+
+    def licence_sync(self):
+        """Once a session, after the first successful upload: issue a pass the server never answered (or whose
+        departure never ran: issuing again returns the same licence), else send what the pilot chose to show, which
+        also brings fresh stars. Nothing to ask for a pilot who hasn't passed."""
+        rec = self.p.licence
+        if rec['passed'] and (rec['number'] is None or not rec['departed']): return self.request_licence('issue')
+        if rec['number'] is not None: return self.request_licence('public')
+        return False
+
+    def licence_set_public(self, public):
+        """The pilot's Public/Private choices: saved now, and sent to the STA once the licence is issued (until
+        then the issue carries them)."""
+        rec = self.p.licence
+        rec['public'] = {k:bool(public[k]) for k in licence.PUBLIC_FIELDS}
+        self.checkpoint()
+        if rec['number'] is not None: self.request_licence('public')
+
+    def toggle_public(self, field):
+        """The licence screen's Public/Private switch for one field (name, skills, check)."""
+        public = dict(self.p.licence['public'])
+        public[field] = not public[field]
+        self.licence_set_public(public)
+
+    def ask_herbert_lesson(self, skill):
+        """Herbert's lesson for one of the four lesson skills, wherever the pilot is and whatever stage his first-trip
+        guidance is at; local only. One at a time: asking for another replaces it. Refused once he has gone."""
+        rec = self.p.licence
+        if rec['departed']:
+            self.message = 'Herbert has retired.'
+            return
+        if self.p.herbert['stage'] in ('offered','guiding'):
+            self.message = "Herbert's busy with your first trip."
+            return
+        if skill not in licence.LESSON_SKILLS: return
+        rec['lesson'] = skill
+        self.checkpoint()
+        self.herbert_say(herbert.lesson_lines(skill),asked=True)
+
+    def licence_lessons(self):
+        """The lesson skills Herbert can still teach: not yet shown, and only while he is aboard."""
+        rec = self.p.licence
+        if rec['departed']: return []
+        return [s for s in licence.LESSON_SKILLS if rec['skills'].get(s) is None]
+
+    def licence_rating(self):
+        """The card's rating: five stars, filled to the STA's reputation; blank until the licence is issued."""
+        stars = self.p.licence['stars']
+        if self.p.licence['number'] is None or stars is None: return ''
+        stars = max(0,min(5,stars))
+        return '★'*stars+'☆'*(5-stars)
+
+    def licence_booking(self):
+        """(bookable, the line to show) for the check flight on the licence screen."""
+        rec = self.p.licence
+        if not self.licence_online() and not rec['passed']: return False,'The Trade Dog Licence is issued to online pilots.'
+        if rec['passed']:
+            at = rec['check']['at'] if rec['check'] else None
+            if rec['number'] is None: return False,'Check flight passed. Registering with the STA.'
+            return False,'Check flight passed'+(f' {licence.sta_date(at)}.' if at is not None else '.')
+        if self.check_flight: return False,'Your check flight is under way.'
+        ok,reason = licence.can_book(rec,time.time())
+        if not ok: return False,reason
+        if self.session_mode() != 'market' or self.p.deep_space: return False,'Book the check flight while docked.'
+        return True,'Book check flight  B'
+
+    def licence_book(self):
+        ok,line = self.licence_booking()
+        if ok: self.book_check_flight()
+        else: self.message = line
+
+    def licence_skill_rows(self):
+        """The document's skill rows: (skill, y, the hint's lines under a skill not yet shown)."""
+        rec,rows,y = self.p.licence,[],LICENCE_CARD[1]+28
+        for s in licence.SKILLS:
+            done = rec['skills'].get(s)
+            under = [] if done else textwrap.wrap(licence.SKILL_HINTS[s],47)
+            rows.append((s,y,under))
+            y += 20*(1+len(under))+3
+        return rows
+
+    def draw_licence(self):
+        d,rec = self.d,self.p.licence
+        d.text(35,62,'VMS / TRADE DOG LICENCE',GOLD)
+        self.draw_licence_card()
+        # The document behind the card: the logbook's nine skills.
+        x = LICENCE_DOC_X
+        d.text(x,LICENCE_CARD[1],'LOGBOOK: NINE SKILLS',GOLD)
+        for s,y,under in self.licence_skill_rows():
+            done = rec['skills'].get(s)
+            if done:   # a tick, drawn (not every monospace font has the glyph)
+                d.line(x+2,y+11,x+6,y+15,GREEN); d.line(x+6,y+15,x+13,y+5,GREEN)
+                d.line(x+2,y+12,x+6,y+16,GREEN); d.line(x+6,y+16,x+13,y+6,GREEN)
+            else: d.text(x+2,y,'·',DIM)
+            d.text(x+20,y,licence.SKILL_NAMES[s],CREAM if done else (160,225,213))
+            d.text(x+240,y,f"{licence.sta_date(done['at'])} · {done['place'][:12]}" if done else 'not yet',GREEN if done else DIM)
+            for i,line in enumerate(under): d.text(x+20,y+20*(i+1),line,DIM)
+        # Under the card: the check flight, and what the pilot page shows.
+        left,top = 35,LICENCE_CARD[1]+LICENCE_CARD[3]+12
+        d.text(left,top,'CHECK FLIGHT',GOLD)
+        ok,line = self.licence_booking()
+        if not ok: d.text(left,top+26,line,CREAM if rec['passed'] else GOLD)
+        if rec['number'] is not None and self.licence_qr():   # only an issued licence from the official server has a page
+            d.text(left,top+142,'Public: shown on your riftdogs.com pilot page.',DIM)
+
+    def licence_buttons(self):
+        """The licence screen's buttons (drawn after the screen, like every screen's buttons)."""
+        rec = self.p.licence
+        top = LICENCE_CARD[1]+LICENCE_CARD[3]+12
+        ok,line = self.licence_booking()
+        if ok: self.mouse_button(35,top+22,260,line,ord('b'))
+        word = lambda f: 'Public' if rec['public'][f] else 'Private'
+        self.mouse_button(35,top+64,195,f'Name: {word("name")}  N',ord('n'))
+        self.mouse_button(240,top+64,210,f'Skills: {word("skills")}  S',ord('s'))
+        self.mouse_button(35,top+102,275,f'Check flight: {word("check")}  C',ord('c'))
+        lessons = self.licence_lessons()
+        for s,y,_ in self.licence_skill_rows():
+            if s not in lessons: continue
+            x = LICENCE_DOC_X+385   # to the content's right edge (x 1165)
+            ask = lambda s=s: self.ask_herbert_lesson(s)
+            ask.lesson = s
+            self.d.rect(x,y-1,160,20,(55,125,135))
+            self.d.text(x+6,y-1,'Ask Herbert'+('  A' if s == lessons[0] else ''),GREEN)
+            self.mouse_row(x,y-1,160,20,ask)
+        self.mouse_button(35,674,1000,'Return to VMS',action=self.mouse_back)
+
+    def draw_licence_card(self):
+        """The card, in the game's line style: cream, navy and the STA's steel blue. Unissued (or offline) it has
+        the same layout with the values blank and UNREGISTERED across it. The QR code (the pilot's riftdogs.com
+        page) stands where the photo would, only on a licence from the official server."""
+        d,rec,p = self.d,self.p.licence,self.p
+        x0,y0,w,h = LICENCE_CARD
+        navy,cream = LICENCE_NAVY,LICENCE_CREAM
+        number = rec['number'] if self.licence_online() else None
+        d.fill(x0,y0,w,h,cream)
+        d.rect(x0,y0,w,h,navy); d.rect(x0+3,y0+3,w-6,h-6,navy)
+        # Header: RIFTDOGS, then the licence's name and its holder's trade.
+        d.big_text(x0+15,y0+14,'RIFTDOGS',navy,2)
+        d.line(x0+200,y0+16,x0+200,y0+56,navy)
+        d.text(x0+212,y0+25,'TRADE DOG LICENCE',navy)
+        sub = 'INDEPENDENT INTERSTELLAR TRADE OPERATOR'
+        d.text(x0+(w-len(sub)*11)//2,y0+62,sub,navy)
+        d.fill(x0+6,y0+87,w-12,4,LICENCE_ORANGE); d.fill(x0+6,y0+92,w-12,2,LICENCE_RED)
+        # The photo's place: the QR code, dark modules navy on a cream square with its quiet zone.
+        qx,qy = LICENCE_QR_AT
+        m = LICENCE_QR_MODULE
+        side = 37*m
+        d.rect(qx-2,qy-2,side+4,side+4,navy)
+        grid = None
+        if number is not None and self.licence_qr():
+            if getattr(self,'_licence_qr_cache',(None,None))[0] != number:
+                self._licence_qr_cache = (number,qr.encode(licence.profile_url(number)))
+            grid = self._licence_qr_cache[1]
+        if grid:
+            for r,row in enumerate(grid):
+                for c,dark in enumerate(row):
+                    if dark: d.fill(qx+(4+c)*m,qy+(4+r)*m,m,m,navy)
+            d.text(qx+(side-12*11)//2,qy+side+6,'riftdogs.com',navy)
+        else:
+            d.big_text(qx+(side-66)//2,qy+(side-42)//2,'STA',STA_BLUE,2)
+        # The rows, with the STA's blue panel (star and orbit) at their right.
+        rx,ry,rw,rh = x0+178,y0+100,w-193,152
+        cx,cy,r = rx+rw+120,ry+rh//2,200
+        arc = [(cx-math.sqrt(r*r-(yy-cy)**2),yy) for yy in range(ry+1,ry+rh,12)]+[(cx-math.sqrt(r*r-(ry+rh-1-cy)**2),ry+rh-1)]
+        d.polygon([(rx+rw-1,ry+1)]+arc+[(rx+rw-1,ry+rh-1)],STA_BLUE)
+        sx,sy = rx+rw-58,ry+rh//2
+        reach = lambda k: 8 if k%2 else 30 if k%4 else 44   # the four points (long up and down), the waist between
+        star = [(sx+reach(k)*math.sin(k*math.pi/4),sy-reach(k)*math.cos(k*math.pi/4)) for k in range(8)]
+        d.polygon(star,cream,(sx,sy))
+        tilt = math.radians(-20)
+        orbit = [(sx+46*math.cos(t)*math.cos(tilt)-14*math.sin(t)*math.sin(tilt),sy+46*math.cos(t)*math.sin(tilt)+14*math.sin(t)*math.cos(tilt))
+                 for t in (i*math.pi/12 for i in range(25))]
+        for (ax,ay),(bx,by) in zip(orbit,orbit[1:]): d.line(ax,ay,bx,by,cream)
+        d.fill(int(orbit[15][0])-3,int(orbit[15][1])-3,6,6,cream)
+        d.rect(rx,ry,rw,rh,navy)
+        name = p.name.upper()[:20] if number and rec['public']['name'] else ''
+        rows = [('LICENCE No.',number or ''),('ISSUED TO',name),('CALLSIGN',number or ''),('CLASS',licence.CLASS if number else ''),('RATING',None)]
+        for i,(label,value) in enumerate(rows):
+            y = ry+6+i*30
+            d.text(rx+8,y,label,navy)
+            if value: d.text(rx+142,y,value,navy)
+            if i: d.line(rx+4,y-5,rx+rw-4,y-5,navy)
+        rating = self.licence_rating() if number else ''
+        for i,ch in enumerate(rating):   # drawn stars: not every monospace font has ★ and ☆
+            px,py = rx+152+i*24,ry+6+4*30+10
+            pts = [(px+(9 if k%2 == 0 else 4)*math.sin(k*math.pi/5),py-(9 if k%2 == 0 else 4)*math.cos(k*math.pi/5)) for k in range(10)]
+            if ch == '★': d.polygon(pts,navy,(px,py))
+            else:
+                for a,b in zip(pts,pts[1:]+pts[:1]): d.line(*a,*b,navy)
+        # Issued and expiry, in STA dates.
+        by = ry+rh+8
+        d.rect(rx,by,rw,52,navy); d.line(rx+rw//2,by,rx+rw//2,by+52,navy)
+        issued = rec['issued'] if number else None
+        d.text(rx+8,by+4,'ISSUED',navy); d.text(rx+rw//2+8,by+4,'EXPIRES',navy)
+        if issued is not None:
+            d.text(rx+8,by+26,licence.sta_date(issued),navy); d.text(rx+rw//2+8,by+26,licence.expires(issued),navy)
+        # Footer: the STA's seal and line, then the card's stripes.
+        fy = y0+h-60
+        sealx,sealy = x0+46,fy+20
+        ring = [(sealx+20*math.cos(t*math.pi/10),sealy+20*math.sin(t*math.pi/10)) for t in range(21)]
+        for a,b in zip(ring,ring[1:]): d.line(*a,*b,navy)
+        d.text(sealx-16,sealy-10,'STA',navy)
+        d.text(x0+80,fy,'SOVEREIGN TRADE ASSEMBLY',navy)
+        d.text(x0+80,fy+20,'COMMERCE · FREIGHT · SALVAGE · CHARTER',STA_BLUE)
+        d.fill(x0+6,y0+h-15,w-12,4,LICENCE_ORANGE); d.fill(x0+6,y0+h-10,w-12,2,LICENCE_RED)
+        if number is None:
+            word = 'UNREGISTERED'
+            sw,sh = len(word)*33,63
+            ux,uy = x0+(w-sw)//2,y0+150
+            d.fill(ux-12,uy-6,sw+24,sh+12,cream)
+            d.rect(ux-12,uy-6,sw+24,sh+12,LICENCE_RED); d.rect(ux-9,uy-3,sw+18,sh+6,LICENCE_RED)
+            d.big_text(ux,uy,word,LICENCE_RED,3)
+
+    def poll_licence(self):
+        """Game thread, every frame: start the session's licence_sync() once an upload has reached the server (again
+        after LICENCE_RETRY if the server then couldn't be reached), apply a finished request, and save an applied
+        answer that couldn't be saved yet."""
+        remote = getattr(self,'remote_save',None)
+        if (remote is not None and not getattr(self,'licence_synced',False) and not self.licence_busy()
+                and getattr(remote,'last_upload_ok',None) is True and time.monotonic() >= getattr(self,'licence_retry_at',0.)):
+            self.licence_synced = True
+            self.licence_sync()
+        job = getattr(self,'licence_job',None)
+        if job is not None and job['done'].is_set():
+            self.licence_job = None
+            self.apply_licence(job)
+            queued,self.licence_queued = getattr(self,'licence_queued',None),None
+            if queued and (queued != 'public' or self.p.licence['number'] is not None): self.request_licence(queued)
+        if getattr(self,'licence_unsaved',None) is not None: self.save_licence()
+
+    def apply_licence(self, job):
+        from save_sync import Refused
+        error,action = job['error'],job['action']
+        if isinstance(error,Refused):
+            self.message = error.message   # the server's words; the pilot stays as they were (passed, unregistered)
+            return
+        if error is not None:
+            # Unreachable: the pass stays held in the save, and the sync asks again (later this session or the next).
+            self.licence_synced,self.licence_retry_at = False,time.monotonic()+self.LICENCE_RETRY
+            if action == 'issue': self.message = "The STA can't be reached. Your pass is kept; it is registered when you reconnect."
+            return
+        reply = job['reply']
+        try:
+            number,issued,stars,public = (reply[k] for k in ('number','issued','stars','public'))
+            if type(number) is not str or not 0 < len(number) <= 32: raise ValueError('number')
+            if type(issued) not in (int,float) or not math.isfinite(issued): raise ValueError('issued')
+            if type(stars) is not int or not 0 <= stars <= 5: raise ValueError('stars')
+            if type(public) is not dict or set(public) != set(licence.PUBLIC_FIELDS) or any(type(v) is not bool for v in public.values()): raise ValueError('public')
+        except (KeyError,TypeError,ValueError):
+            self.message = "The STA's reply couldn't be read. Your pass is kept."
+            return
+        fields = dict(number=number,issued=float(issued),stars=stars)
+        if getattr(self,'licence_queued',None) != 'public': fields['public'] = dict(public)   # a newer choice is on its way
+        self.hold_licence(**fields)
+        self.save_licence()
+        if action == 'issue':
+            self.licence_synced = True   # this session's sync has nothing left to issue
+            if not self.p.licence['departed']: self.herbert_departs()
+
+    def hold_licence(self, **fields):
+        """Licence record fields that must reach the save (the pass, the STA's answer): kept until one does."""
+        self.licence_unsaved = {**(getattr(self,'licence_unsaved',None) or {}),**fields}
+
+    def save_licence(self):
+        """Put the held fields (the pass, the STA's answer) in the record and save them. checkpoint() saves nothing
+        while the inbox settles, and settling may adopt a server copy older than them, so they are kept and put back
+        until a save has gone through. A copy without Herbert's departure gets it again (it was never saved)."""
+        if self.licence_unsaved.get('departed') and not self.p.licence['departed']: self.herbert_leave()
+        self.p.licence.update(self.licence_unsaved)
+        if self.inbox_busy() or getattr(self,'_restoring',False): return
+        self.checkpoint()
+        self.licence_unsaved = None
+
+    def finish_licence(self, timeout=10.):
+        """Wait for an in-flight licence request and apply it (tests; the game itself never waits)."""
+        deadline = time.monotonic()+timeout
+        while self.licence_busy() and time.monotonic() < deadline:
+            self.licence_job['done'].wait(max(0.,deadline-time.monotonic()))
+            self.poll_licence()
+
     def herbert_event(self, name, **extra):
         self.herbert_say(self.tutor.event(name,self.herbert_context(**extra)))
 
@@ -2017,6 +2638,12 @@ class Game:
         self.herbert_say(tutor.call(self.herbert_context()),asked=True)
 
     def wave_herbert_off(self):
+        if self.p.licence['lesson']:   # a lesson he was giving: that ends, his first-trip guidance is not touched
+            self.p.licence['lesson'] = None
+            if self.p.herbert['stage'] not in ('offered','guiding'):   # his first-trip offer or guidance on screen is left alone
+                self.herbert_panel = self.herbert_pending = self.herbert_card = None
+            self.checkpoint()
+            return
         self.herbert_say(self.tutor.wave_off(),asked=True)   # the pilot's own choice, answered where they are
 
     def herbert_actions(self):
@@ -2294,6 +2921,7 @@ class Game:
 
     def accept_rescue(self):
         if self.mode != 'distress' or not self.rescue: return
+        self.end_check_flight('aborted')   # a salvage tow ends the test
         contract = self.rescue
         offer = contract['offers'][contract['selected']]
         fee = self.salvage_terms(offer['percent'])
@@ -2503,6 +3131,7 @@ class Game:
             self.docking_pending = 2.
             self.message = 'Docking clearance requested. Await station response.'
             self.comms.local('YOU',f'{SYSTEMS[self.p.system][0]} Control, this is {self.comms_callsign()}, request docking, over.')
+            self.check_flight_radio()
 
     def station_hostile(self, reason):
         if self.p.deep_space: return
@@ -2756,6 +3385,8 @@ class Game:
                 self.ship_target = None
                 self.assist_spawn_timer = self.distress_delay()
                 self.message = f'Repair successful. The rescued crew paid {reward} credits.'
+                self.p.licence['rescues'] += 1
+                self.licence_skill('rescue')
             else:
                 self.broken_down = False
                 self.breakdown_in = None
@@ -2821,6 +3452,7 @@ class Game:
         if not self.docking_permitted():
             self.message = 'Docking refused: wanted status.'
             return
+        at_slot = (abs(self.speed),abs(math.degrees(self.slot_error()))) if self.check_flight else None   # for Varga's marks
         arrest = self.arrest_pending()
         inspection = self.inspect_cargo() if not self.customs_checked and not arrest else ''
         self.mode = 'market'
@@ -2837,6 +3469,7 @@ class Game:
         if tell_herbert and self.mode == 'market': self.herbert_event('docked')
         self.save()
         if self.mode == 'market': self.collect_inbox()
+        if at_slot: self.check_flight_docked(*at_slot)
 
     CONTACTING = 'Contacting station…'
 
@@ -3144,6 +3777,7 @@ class Game:
         base = self.session_mode()
         if base in ('flight','cruise'): self.mode,self.comms_number_typing = base,False   # back to the cockpit to fly there
         self.message = f'DSC: alert from {ship["ident"]} acknowledged. Direction marker tracks them; N hails within 1,500 m.'
+        self.licence_skill('dsc')
 
     def update_disabled_ship(self, dt):
         # A crew under attack swings what little thrust they have to aim back at you.
@@ -3215,6 +3849,7 @@ class Game:
         self.p.kills += 1
         self.spawn = 24
         self.message = ('Police ship destroyed. Fine increased by 150 cr.' if self.enemy_kind == 'police' else 'Hostile destroyed. Bounty: 35 credits.')+(' Cargo canisters spilled: fly slowly to scoop them.' if spilled else '')
+        if self.enemy_kind != 'police': self.licence_skill('combat')   # after the message, so the logbook line joins it
         self.checkpoint()
 
     def station_job_board(self):
@@ -3920,7 +4555,7 @@ class Game:
         d.text(45,595,f'Page {self.trades_page+1} of {pages}. UP shows older entries, DOWN newer. BACKSPACE returns.',(135,175,185))
 
     REPORT_ROWS = (('trade','Trading profit'),('bounty','Bounties'),('jobs','Jobs and assists'),('running','Fuel, repairs, services'),
-                   ('fines','Fines and seizures'),('rescue','Rescue fees'),('destroyed','Ship destroyed'))
+                   ('fines','Fines and seizures'),('rescue','Rescue fees'),('destroyed','Ship destroyed'),('herbert','Herbert'))
 
     def draw_reports(self):
         d,p = self.d,self.p
@@ -3931,10 +4566,12 @@ class Game:
         m = ledger_metrics(bucket)
         dim = (135,175,185)
         d.text(45,125,'Where your money came from and went',GOLD)
-        for i,(key,label) in enumerate(self.REPORT_ROWS):
+        rows = [(key,label) for key,label in self.REPORT_ROWS if key != 'herbert' or bucket.get(key)]   # his line once he has one
+        pitch = 27 if len(rows) <= 7 else 24
+        for i,(key,label) in enumerate(rows):
             value = bucket.get(key,0)
             if key == 'destroyed' and bucket.get('deaths'): label += f' ({bucket["deaths"]:.0f}x)'
-            d.text(45,160+i*27,f'{label:<26}{value:>+12,.0f} cr',RED if value < 0 else (120,220,140) if value > 0 else GREEN)
+            d.text(45,160+i*pitch,f'{label:<26}{value:>+12,.0f} cr',RED if value < 0 else (120,220,140) if value > 0 else GREEN)
         d.line(45,352,530,352)
         d.text(45,360,f'{"Net earnings":<26}{m["net"]:>+12,.0f} cr',GOLD)
         d.text(45,395,f'{"Equipment and training":<26}{bucket.get("equipment",0):>+12,.0f} cr',dim)
@@ -4032,7 +4669,7 @@ class Game:
             d.text(45,535,f'Fuel {fuel_price(p.system)} cr/unit (sells for {fuel_price(p.system)*3//4}). Refill {p.fuel_cost()} cr / Service {p.service_cost()} cr')
         else:
             d.text(45,535,'Fuel, station repairs and fitting require docking. Field engineering remains available.')
-        d.text(45,625,'BACKSPACE returns. 1 opens Nav. 8 opens engineering.')
+        d.text(45,625,'BACKSPACE returns. 1 opens Nav. 8 opens engineering. D Licence.')
 
     def open_utility(self, target):
         if target == 'help':
@@ -4276,6 +4913,8 @@ class Game:
         self.comms.local('YOU',comms.clean_text(text),priority,channel=self.comms_channel)   # your own line, in the log
         self.comms.mark_read()
         if priority in ('distress','urgency'): self.comms_priority = 'routine'
+        self.licence_skill('comms')
+        self.check_flight_radio()
         return True
 
     def comms_callsign(self):
@@ -4831,6 +5470,7 @@ class Game:
             elif k == ord('9'): self.open_hub('money')
             elif k == ord('8'):
                 self.engineering_return,self.mode = 'vms','engineering'
+            elif k == ord('d'): self.mode = 'licence'; self.keys.clear()
             elif k in (ord('f'),ord('k'),ord('r'),ord('u'),ord('l')):
                 if self.vms_return != 'market': self.message = 'Dock before using station vessel services.'
                 elif k == ord('f'): self.message = self.p.refuel(); self.checkpoint()
@@ -4838,6 +5478,12 @@ class Game:
                 elif k == ord('r'): self.message = self.p.repair(); self.checkpoint()
                 elif k == ord('u'): self.outfit_return,self.mode = 'vms','outfit'
                 elif k == ord('l'): self.mode = 'market'; self.request_launch()
+            return
+        if self.mode == 'licence':
+            if k == ord('d'): self.mode = 'vms'   # Backspace (Back) too; Esc saves and closes, as everywhere
+            elif k == ord('b'): self.licence_book()
+            elif k in (ord('n'),ord('s'),ord('c')): self.toggle_public({ord('n'):'name',ord('s'):'skills',ord('c'):'check'}[k])
+            elif k == ord('a') and self.licence_lessons(): self.ask_herbert_lesson(self.licence_lessons()[0])
             return
         if self.mode == 'money':
             if k in (27,ord('9')): self.mode = self.money_return
@@ -5103,12 +5749,14 @@ class Game:
             self.rear_view = not self.rear_view
             self.laser_flash = 0
             self.message = (f'REAR VIEW - rear {self.p.rear_laser} laser ready. V changes it.' if 'rear' in self.p.equipment else 'REAR VIEW - no rear laser mount fitted. Buy one in outfitting.') if self.rear_view else 'FORWARD VIEW.'
+            if self.rear_view: self.licence_view('rear')
             return
         if k == ord('5'):
             targets = ([self.enemy] if self.enemy is not None else [])+([self.disabled_ship['object']] if self.disabled_ship else [])+[t['object'] for t in self.traffic]+[p['object'] for p in self.other_players.values()]
             current = next((i for i,target in enumerate(targets) if target is self.ship_target),-1)
             self.ship_target = targets[current+1] if current+1 < len(targets) else None
             self.message = 'Ship target selected.' if self.ship_target else 'No ship selected.'
+            if self.ship_target: self.licence_view('target')
             return
         if k == ord('h'):
             self.jump()
@@ -5309,7 +5957,9 @@ class Game:
             destination = trip['destination']
             self.arrive(destination['position'],destination['system'])
             self.message = 'Cruise complete. Arrived at '+destination['name']+'.'
-            if destination['system'] is not None: self.herbert_event('jumped')   # another system reached, as by a jump
+            if destination['system'] is not None:
+                self.herbert_event('jumped')   # another system reached, as by a jump
+                self.licence_skill('cruise')
 
     def arrive(self, position, system, from_hyperspace=False):
         self.p.position = list(position)
@@ -5477,7 +6127,7 @@ class Game:
     def active_navigation(self):
         if self.nav == 'object' and self.nav_target:
             obj,label = self.nav_target
-            if any(obj is item for item in self.asteroids+self.fragments+self.mine_objects+[self.sun]): return obj,label
+            if any(obj is item for item in self.asteroids+self.fragments+self.mine_objects+[self.sun]+self.check_objects()): return obj,label
         if self.nav == 'course' and self.p.waypoint:
             w = self.p.waypoint
             delta = [b-a for a,b in zip(self.p.position,w['position'])]
@@ -5535,6 +6185,7 @@ class Game:
         for ore in self.fragments: contacts.append(('object',ore,self.fragment_label(ore),(150,190,255)))
         contacts += [('player',p['object'],'PLAYER '+self.player_tag(p['name']),(140,185,255)) for p in self.other_players.values()]
         contacts.append(('object',self.sun,'SUN',GOLD))
+        contacts += [('object',beacon,'BEACON',GOLD) for beacon in self.check_objects()]
         return contacts
 
     def effective_radar_range(self):
@@ -5611,6 +6262,7 @@ class Game:
         if kind in ('ship','disabled','player','trader'):
             self.ship_target = obj
             self.message = label+' selected. Direction marker tracks this ship; 5 clears selection.'
+            self.licence_view('target')
         elif kind == 'object':
             self.nav = 'object'
             self.nav_target = (obj,label)
@@ -5838,6 +6490,7 @@ class Game:
         self.fragments.remove(fragment)
         what = f'canister: 1 t of {GOODS[good].lower()}' if canister else f'1 t of {GOODS[good].lower()}'
         self.message = f'Scooped {what}. {self.p.cargo[good]} t aboard, hold {sum(self.p.cargo)}/{self.p.capacity} t.'
+        self.licence_skill('scooping')
 
     def scoop(self):
         """O: say what the scoops are doing (they collect by themselves)."""
@@ -5875,7 +6528,7 @@ class Game:
         if self.enemy: objects.append(self.enemy)
         if self.enemy_shot: objects.append(self.enemy_shot['position'])
         if self.disabled_ship: objects.append(self.disabled_ship['object'])
-        objects += [e['position'] for e in self.explosions]+[m['position'] for m in self.missiles_in_flight]
+        objects += [e['position'] for e in self.explosions]+[m['position'] for m in self.missiles_in_flight]+self.check_objects()
         for obj in objects:
             x,y,z = obj[:3]
             x,y = x*c+y*s,-x*s+y*c
@@ -5885,7 +6538,7 @@ class Game:
         self.station_axis[:] = unit_vector(self.station_axis)
 
     def move_world(self, dx, dy, dz):
-        for obj in [self.station,self.sun,self.planet] + ([self.enemy_shot['position']] if self.enemy_shot else []) + ([self.disabled_ship['object']] if self.disabled_ship else []) + self.asteroids + self.fragments + self.mine_objects + [t['object'] for t in self.traffic] + [e['position'] for e in self.explosions] + [m['position'] for m in self.missiles_in_flight]:
+        for obj in [self.station,self.sun,self.planet] + ([self.enemy_shot['position']] if self.enemy_shot else []) + ([self.disabled_ship['object']] if self.disabled_ship else []) + self.asteroids + self.fragments + self.mine_objects + [t['object'] for t in self.traffic] + [e['position'] for e in self.explosions] + [m['position'] for m in self.missiles_in_flight] + self.check_objects():
             obj[0] -= dx
             obj[1] -= dy
             obj[2] -= dz
@@ -5912,6 +6565,7 @@ class Game:
                 self.arrive(destination['position'],destination['system'],from_hyperspace=True)
                 self.message = 'Arrived at '+destination['name']+'.'
                 self.herbert_event('jumped')
+                self.licence_skill('jump')
             return
         if self.mode == 'cruise':
             self.update_cruise(dt)
@@ -6224,6 +6878,7 @@ class Game:
         before = stock[good]
         held = self.p.cargo[good]
         value = self.trade_quote(good,buy)
+        profit_before = self.p.trade_profit
         result = self.p.trade(good,buy,value=value,**options)
         if stock[good] != before:
             key = (self.p.system,good)
@@ -6234,6 +6889,7 @@ class Game:
                 self.market_client.queue_trade(self.p.system,good,stock[good]-before)
                 if good in ILLEGAL and not buy: self.report_contraband(delivered=(good,stock[good]-before))
             if buy and not options.get('use_crymto'): result += self.resale_hint(good,value)
+        if self.p.trade_profit > profit_before: self.licence_skill('trading')
         if self.p.cargo[good] != held:
             if buy: self.herbert_event('bought')
             else:
@@ -6717,10 +7373,14 @@ class Game:
                 self.mouse_button(665,638,300,'Buy with Crymto C',ord('c'))
         elif self.mode == 'vms':
             if self.vms_return == 'market':
-                for i,(label,key) in enumerate([('Buy fuel F',ord('f')),('Sell fuel K',ord('k')),('Service R',ord('r')),('Outfit U',ord('u')),('Engineer 8',ord('8')),('Launch L',ord('l'))]):
-                    self.mouse_button(35+i*172,575,164,label,key)
-            else: self.mouse_button(35,575,300,'Engineering 8',ord('8'))
+                for i,(label,key) in enumerate([('Buy fuel F',ord('f')),('Sell fuel K',ord('k')),('Service R',ord('r')),('Outfit U',ord('u')),('Engineer 8',ord('8')),('Licence D',ord('d')),('Launch L',ord('l'))]):
+                    self.mouse_button(35+i*161,575,153,label,key)
+            else:
+                self.mouse_button(35,575,300,'Engineering 8',ord('8'))
+                self.mouse_button(350,575,300,'Licence D',ord('d'))
             self.mouse_button(35,674,1000,'Return',action=self.mouse_back)
+        elif self.mode == 'licence':
+            self.licence_buttons()
         elif self.mode == 'money' and self.money_return == 'market':
             for i,(label,key) in enumerate(self.MONEY_ACTIONS):
                 self.mouse_button(35+(i%2)*515,380+(i//2)*100,490,label,key)
@@ -6895,7 +7555,7 @@ class Game:
                        'menu':'menu_return','notes':'notes_return','rename':'rename_return','intro':'intro_return','feedback':'feedback_return',
                        'money':'money_return','vms':'vms_return','outfit':'outfit_return',
                        'engineering':'engineering_return','cargo':'cargo_return','launch_warning':'launch_return','comms':'comms_return'}
-            fixed = {'planet_profile':'map','redeem':'money','bank':'money','jobs':'money','trades':'money','reports':'money','hail':'flight',
+            fixed = {'licence':'vms','planet_profile':'map','redeem':'money','bank':'money','jobs':'money','trades':'money','reports':'money','hail':'flight',
                      'exchange':'money','trade_deal':'market','departure':'market'}
             if self.mode in returns: self.mode = getattr(self,returns[self.mode],'market')
             elif self.mode in fixed: self.mode = fixed[self.mode]
@@ -6956,7 +7616,9 @@ class Game:
                 ('Fuel and service','2 then F / R','Fuel is a separate purchase. Service repairs damage and resets maintenance wear.'),
                 ('Bank and cargo bays','3 then B','Deposit money, store cargo, rent 40t or buy 100t of station capacity.'),
                 ('Earn fuel money','3 then J','Free dockside shifts pay 15-40 credits. Workshop practice earns engineering experience.'),
-                ('Payment codes','3 then R','Online and docked: pay another pilot with a code (1% fee), or redeem one.')])]
+                ('Payment codes','3 then R','Online and docked: pay another pilot with a code (1% fee), or redeem one.')]),
+            ('Licence',[
+                ('Trade Dog Licence','VMS then D','Skills score as you fly. Pass Varga\'s check flight: online pilots are issued a card with a QR code. Herbert retires once you are licensed.')])]
 
     def draw_help(self):
         d=self.d
@@ -7036,6 +7698,8 @@ class Game:
             self.draw_jobs()
         elif self.mode == 'engineering':
             self.draw_engineering()
+        elif self.mode == 'licence':
+            self.draw_licence()
         elif self.mode == 'departure':
             d.text(80,150,'STATION TRAFFIC CONTROL',GOLD)
             d.text(80,220,f'Requesting departure: {self.departure_remaining:.1f}s' if self.departure_remaining else 'Departure clearance GRANTED.')
