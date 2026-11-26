@@ -2,7 +2,7 @@
 
 A living galaxy you trade in.
 
-An original Elite-inspired Python space game for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.16.0**.
+An original Elite-inspired Python space game for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.17.0**.
 
 Play offline, or play online in a shared living galaxy: other commanders' ships on your scanner, a shared market, the Relay's news ticker and payment codes. Online play uses the official Riftdogs server, which saves your progress. Offline play needs no account; every copy of the game checks in with its email and install ID (see [PRIVACY.md](PRIVACY.md)). Shared combat is a future project. The phased development plan is in [ROADMAP.md](ROADMAP.md).
 
@@ -92,7 +92,9 @@ You start docked with 400 credits, a full 7-unit fuel tank, a pulse laser, three
 
 **New pilots:** an old hauler called Herbert appears on screen and offers to show brand-new commanders the ropes: say yes and he talks you through your first trip, in a panel while docked and a small card in flight. Say no and he leaves you to it. Call him with Ctrl+H or 5 (comms) for your first three trips; if you said no, he offers again when you call him docked. He works offline.
 
-**Trade Dog Licence:** in VMS (2) press D. Nine logbook skills (Trading, Jump flight, Non-jump flight, Combat, Mining and scooping, Views, Rescue, DSC and Comms) are scored quietly as you play. Herbert has short lessons for four of them, and Examiner Varga of the Sovereign Trade Assembly sets a check flight: launch and take radio station control, fly to a marker beacon without the jump drive, answer a staged distress call on DSC, then dock against the clock. Online pilots are issued the licence under their ship number. The card shows a QR code linking to riftdogs.com/pilot/ and your number, reputation stars, and a Public/Private switch. Herbert retires once you're licensed.
+**Trade Dog Licence:** in VMS (2) press D. Nine logbook skills (Trading, Jump flight, Non-jump flight, Combat, Mining and scooping, Views, Rescue, DSC and Comms) are scored quietly as you play. Herbert has short lessons for four of them, and Examiner Varga of the Sovereign Trade Assembly sets a check flight: launch and take radio station control, fly to a marker beacon without the jump drive, answer a staged distress call on DSC, then dock against the clock. Online pilots are issued the licence under their ship number. The card shows a QR code linking to riftdogs.com/pilot/ and your number, reputation stars, and which parts other pilots may see. Herbert retires once you're licensed.
+
+**Commander names and the STA registry:** your pilot number is your identity. New pilots choose a commander name once (the join form, sign-up, or the first-login name screen). Other pilots see your name and pilot number; the Target page and comms contacts also show former names with STA dates, and Ctrl+T reports a name. To rename, dock, then VMS (2), then N: 500 cr, once a week, and the first name is free. Menu → Alarm sound switches the alarm On or Off (warnings still show).
 
 ### Mouse controls
 
@@ -198,7 +200,7 @@ Online and docked, press **3** (Money) then **R** to pay another pilot. **Create
 
 ## Your account and your data
 
-Connection settings (from the start screen) has **Remove my email** and **Delete my account** (you type your commander name to confirm). Invite codes are single-use and expire after 7 days. Offline saves are sealed: a save file edited by hand can't be imported into the online game. If your game is older than the server allows, it says so and tells you to update.
+Connection settings (from the start screen) has **Remove my email** and **Delete my account** (you type your pilot number to confirm). Invite codes are single-use and expire after 7 days. Offline saves are sealed: a save file edited by hand can't be imported into the online game. If your game is older than the server allows, it says so and tells you to update.
 
 ## Saves and files
 

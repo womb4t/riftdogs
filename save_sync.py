@@ -132,11 +132,13 @@ def valid_token(token):
 
 
 def signup(url, name, email='', allow_lan=False):
-    """Create a pilot account on the server and return its new private token."""
+    """Create a pilot account on the server: (login, commander name, private token). The login is the pilot number."""
     data = account_request(url,'/v1/signup',dict(name=name.strip(),email=email.strip() or None),allow_lan=allow_lan)
-    token = data.get('token') if type(data) is dict else None
-    if not valid_token(token): raise RuntimeError('Server sent an invalid sign-up reply')
-    return token
+    login,token = (data.get('player'),data.get('token')) if type(data) is dict else (None,None)
+    if type(login) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,32}',login) or not valid_token(token):
+        raise RuntimeError('Server sent an invalid sign-up reply')
+    chosen = data.get('name')
+    return login,(chosen if type(chosen) is str and chosen else name.strip()),token
 
 
 def claim_invite(url, claim, allow_lan=False):
@@ -160,8 +162,17 @@ def remove_email(url, token_file, allow_lan=False):
 
 
 def delete_account(url, token_file, confirm, allow_lan=False):
-    """'Delete my account': `confirm` must be the commander name exactly. Cannot be undone."""
+    """'Delete my account': `confirm` must be the pilot number. Cannot be undone."""
     account_request(url,'/v1/account',dict(confirm=confirm),method='DELETE',token=read_token(token_file),allow_lan=allow_lan)
+
+
+def pilot_number(url, token_file, allow_lan=False):
+    """The pilot number of the login in `token_file`, from the server's registry card; None when it can't be learned."""
+    try:
+        data = account_request(url,'/v1/registry',dict(action='me'),token=read_token(token_file),allow_lan=allow_lan)
+    except (RuntimeError,ValueError,OSError): return None
+    number = data.get('number') if type(data) is dict else None
+    return number if type(number) is str and re.fullmatch(r'RD-\d{4,}',number) else None
 
 
 def pending_payment(value, now=None):
@@ -252,6 +263,13 @@ class RemoteSave:
         for a refresh before issue); OSError/RuntimeError/ValueError when the server can't be reached or answers oddly."""
         body = dict(action=action) if action == 'refresh' else dict(action=action,public=public)
         return self.request(body,'/v1/licence',method='POST')
+
+    def registry(self, action, **body):
+        """POST /v1/registry: 'me' (your own card: {number, name, history, next_rename}), 'choose' (name=, the free
+        first name: {name, at}), and 'lookup', 'rename', 'report'. Blocking: the game runs it on a worker thread.
+        Refused on a 4xx (its .message is the server's words); OSError/RuntimeError/ValueError when the server can't
+        be reached or answers oddly."""
+        return self.request(dict(body,action=action),'/v1/registry',method='POST')
 
     def metadata(self, saved_hash):
         with self.meta_lock:

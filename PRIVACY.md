@@ -19,11 +19,15 @@ Riftdogs sends back your place in the queue, whether an online place is ready fo
 
 Playing offline never sends your save, your pilot or what you do in the game.
 
+## Your IP address
+
+Whenever the game or riftdogs.com connects to the Riftdogs server, the server sees your computer's internet (IP) address. It uses it only in memory, to limit how many requests one address can make, so nobody can flood the server or guess codes. It is not written to disk or logged.
+
 When you play online, the server you joined keeps the following.
 
 ## What is stored, and why
 
-- **Your commander name**, so other pilots can see you and the server knows whose save is whose.
+- **Your commander name and pilot number**, so other pilots can see you and the server knows whose save is whose. See "Your commander name" below.
 - **Your private login**, kept on the server only in a scrambled form that can't be turned back into the login. The login itself stays on your computer.
 - **Your email, if you gave one**, and when you gave it. If you joined the galaxy from the queue, it is the email your copy of the game checked in with. It is used for the things listed under "Every copy of the game" above, and for Riftdogs news only if you asked for news: never sold, shared or used for anything else.
 - **Your saves** and a short history of recent ones, so you can play from any computer and recover from a lost or broken save.
@@ -41,9 +45,29 @@ Online, the communicator keeps **your ship number**, **your contacts and contact
 - Blocking is private: the pilot you block is not told.
 - **Deleting your account deletes all of it** (contacts, blocks, messages and reports). Your ship number is retired and never used again.
 
+## Your commander name
+
+Your pilot number is your identity in the game. The server keeps **your commander name, and every name you have had**, with **when each began and how**: chosen, renamed or reset. Other pilots in the game see your current name and pilot number, and your former names with their dates. Your private login stays on your computer. An older account whose commander name was taken from its account name shows that name.
+
+If another pilot reports your name, the operator of the server sees the reported name, **who reported it**, and who it belongs to. Nothing else is shared with the reporter.
+
+**Deleting your account deletes all of it:** your names and their history, and the reports you made. Your pilot number is retired and never used again.
+
+## Your Trade Dog Licence
+
+If you're issued a Trade Dog Licence, the server keeps **its number** (your ship number), **when it was issued** and **which parts of it you've made public** (your skills and your check flight), so your licence can be shown the way you chose. The card always shows your commander name. Your skills and check-flight results themselves are in your save. Today nothing from your licence is published anywhere: the QR code on the card leads to riftdogs.com, and pilot profile pages don't exist yet. When they do, they will show only what you made public. Deleting your account deletes your licence.
+
+## riftdogs.com
+
+The website sets **no cookies** and uses **no analytics or tracking**. Its pages, fonts, pictures and video all come from riftdogs.com itself, never from other companies. The only things it sends to the Riftdogs server are the forms you fill in (below) and a request for the Relay's latest headlines.
+
 ## The waiting list
 
-If you join the waiting list on riftdogs.com, we keep **your email address and when you joined**, and nothing else. We use it only to email you when there's a place for you, and with occasional Riftdogs news: never sold, shared or used for anything else. To leave the list, email hello@riftdogs.com from that address. Waiting-list addresses are deleted after 24 months.
+If you join the waiting list on riftdogs.com, we keep **your email address and when you joined**, **which computer you'll play on**, **whether you've tested games before and, if you have, what you wrote about it**, and **your referral code and who referred you** (whose link you joined through, if anyone's). We use your answers only to choose testers for each batch, and your email only to email you when there's a place for you, and with occasional Riftdogs news: never sold, shared or used for anything else.
+
+Your referral code makes your personal invite link. When a friend who wasn't already known to Riftdogs joins through it and then installs the game with that same email, we record that the referral counted, and the queue moves you both up (up to five friends each). So that each friend counts only once, the record keeps a scrambled form of your friend's email, made with a secret key kept on the Riftdogs server, which can't be turned back into the address; it is kept for up to 24 months, even if your friend leaves the list. The queue order guides us, but we choose each batch ourselves.
+
+To leave the list, email hello@riftdogs.com from that address: your email, answers and referral code are deleted. A referral already counted stays counted for whoever referred you. Waiting-list addresses and referral records are deleted after 24 months.
 
 If you send a bug report or suggestion from riftdogs.com, we keep **what you wrote, whether it's a bug or a suggestion, and when you sent it**, plus **your email address if you gave one**. We use them only to fix the game and, if you gave an email, to reply to you. To have a report deleted, email hello@riftdogs.com.
 
@@ -58,7 +82,7 @@ If you send a bug report or suggestion from riftdogs.com, we keep **what you wro
 ## How to delete it
 
 - **Remove my email:** Connection settings → Remove my email. The server forgets your email and when you gave it; you get no more news. The game then forgets this computer as Forget this computer does, and asks for an email again before the next game.
-- **Delete my account:** Connection settings → Delete my account, then type your commander name to confirm. The server deletes your account, login, email, saves, save history, trade records, communicator data and messages waiting for you at once, and from its backups within 30 days. The game forgets your login and its copy of your online save on this computer and, for an account on the Riftdogs server, forgets this computer's install as Forget this computer does; your email's place in the queue goes too, and the email itself once no other copy uses it. Payment codes you made that nobody has redeemed yet are cancelled. Records other players need (a payment code they redeemed from you) and your bug reports are kept without your name, though another player's own statement still shows the line it got (for example a payment from you).
+- **Delete my account:** Connection settings → Delete my account, then type your pilot number to confirm. The server deletes your account, login, email, saves, save history, trade records, communicator data, commander names, licence and messages waiting for you at once, and from its backups within 30 days. The game forgets your login and its copy of your online save on this computer and, for an account on the Riftdogs server, forgets this computer's install as Forget this computer does; your email's place in the queue goes too, and the email itself once no other copy uses it. Payment codes you made that nobody has redeemed yet are cancelled. Records other players need (a payment code they redeemed from you) and your bug reports are kept without your name, though another player's own statement still shows the line it got (for example a payment from you).
 - **Or ask the operator** of the server you play on, who can do the same for you.
 
 Your offline pilot is never touched by either.

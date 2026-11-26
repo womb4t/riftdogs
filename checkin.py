@@ -347,7 +347,8 @@ JOIN_FAILED = 'Could not join the galaxy right now. Try again later.'
 
 
 def join_galaxy(claim, name, opener=None):
-    """Swap the claim for an account at the Riftdogs server: (name, token). ValueError holds the server's words when
+    """Swap the claim for an account at the Riftdogs server: (login, commander name, token). The login is the pilot
+    number. ValueError holds the server's words when
     it refuses the name; any other failure is a plain OSError. The claim never appears in an error."""
     from save_sync import NoRedirect, check_server, canonical, version_headers, valid_token
     try: url = check_server(DEFAULT_SERVER, allow_lan=True)
@@ -366,5 +367,6 @@ def join_galaxy(claim, name, opener=None):
     if status == 403: raise OSError(_text(data.get('error') if data else None) or JOIN_FAILED)   # e.g. the server is full
     player, token = (data.get('player'), data.get('token')) if data else (None, None)
     if status in (200, 201) and type(player) is str and re.fullmatch(r'[A-Za-z0-9_-]{1,32}', player) and valid_token(token):
-        return player, token
+        chosen = data.get('name')
+        return player, (chosen if type(chosen) is str and chosen else name), token
     raise OSError(JOIN_FAILED)

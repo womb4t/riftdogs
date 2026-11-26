@@ -50,14 +50,21 @@ def schema(db):
 
 # ---- ship numbers
 
+def issue_number(db):
+    """A free ship number, picked at random, without reserving it: never one in `ships` (a deleted pilot's number
+    stays there), and never one an older account uses as its login."""
+    taken = {r[0] for r in db.execute('SELECT number FROM ships')}
+    taken |= {r[0] for r in db.execute("SELECT upper(name) FROM players WHERE upper(name) LIKE 'RD-%'")}
+    free = [f'RD-{n}' for n in range(1000, 10000) if f'RD-{n}' not in taken]
+    if not free: raise RuntimeError('No ship numbers left.')
+    return random.choice(free)
+
+
 def number_for(db, player):
     """The player's ship number, issued (random, free, never a reserved one) on the first call."""
     row = db.execute('SELECT number FROM ships WHERE player=?', (player,)).fetchone()
     if row: return row[0]
-    taken = {r[0] for r in db.execute('SELECT number FROM ships')}
-    free = [f'RD-{n}' for n in range(1000, 10000) if f'RD-{n}' not in taken]
-    if not free: raise RuntimeError('No ship numbers left.')
-    number = random.choice(free)
+    number = issue_number(db)
     db.execute('INSERT INTO ships(player, number) VALUES (?,?)', (player, number))
     return number
 
@@ -74,9 +81,16 @@ def _resolve(db, number):
     return player
 
 
-def _name(db, player):
+def login(db, player):
+    """The account login, for the operator's CLI only: other pilots are never shown it."""
     row = db.execute('SELECT name FROM players WHERE id=?', (player,)).fetchone()
     return row[0] if row else '(deleted)'
+
+
+def _name(db, player):
+    import names
+    if db.execute('SELECT 1 FROM players WHERE id=?', (player,)).fetchone() is None: return '(deleted)'
+    return names.display(db, player)
 
 
 # ---- contacts and blocks
@@ -131,22 +145,29 @@ def ignore(db, owner, other):
     db.execute('DELETE FROM requests WHERE sender=? AND recipient=?', (other, owner))
 
 
+def _listed(db, rows):
+    """Contacts and blocks as other pilots are named: by commander name, never by login, in name then number order."""
+    import names
+    return sorted((dict(number=n, name=names.display(db, other)) for n, other in rows), key=lambda r: (r['name'].lower(), r['number']))
+
+
 def blocked_of(db, player):
-    rows = db.execute('SELECT s.number, p.name FROM blocks b JOIN ships s ON s.player=b.other JOIN players p ON p.id=b.other '
+    rows = db.execute('SELECT s.number, b.other FROM blocks b JOIN ships s ON s.player=b.other JOIN players p ON p.id=b.other '
                       'WHERE b.owner=? ORDER BY p.name LIMIT ?', (player, LIST_LIMIT)).fetchall()
-    return [dict(number=n, name=name) for n, name in rows]
+    return _listed(db, rows)
 
 
 def contacts_of(db, player):
-    rows = db.execute('SELECT s.number, p.name FROM contacts c JOIN ships s ON s.player=c.other JOIN players p ON p.id=c.other '
+    rows = db.execute('SELECT s.number, c.other FROM contacts c JOIN ships s ON s.player=c.other JOIN players p ON p.id=c.other '
                       'WHERE c.owner=? ORDER BY p.name LIMIT ?', (player, LIST_LIMIT)).fetchall()
-    return [dict(number=n, name=name) for n, name in rows]
+    return _listed(db, rows)
 
 
 def requests_for(db, player):
-    rows = db.execute('SELECT s.number, p.name, r.at FROM requests r JOIN ships s ON s.player=r.sender JOIN players p ON p.id=r.sender '
+    import names
+    rows = db.execute('SELECT s.number, r.sender, r.at FROM requests r JOIN ships s ON s.player=r.sender JOIN players p ON p.id=r.sender '
                       'WHERE r.recipient=? ORDER BY r.at DESC LIMIT ?', (player, REQUEST_LIMIT)).fetchall()
-    return [dict(number=n, name=name, at=at) for n, name, at in reversed(rows)]
+    return [dict(number=n, name=names.display(db, other), at=at) for n, other, at in reversed(rows)]
 
 
 # ---- messages
@@ -357,10 +378,13 @@ class CommsLog:
         """An unread direct message, Mayday or Pan-Pan (not your own): the cockpit's Comms page lights for one.
         Direct lines from quiet_senders don't count, unless their text is one of `always`."""
         with self.lock:
-            return any(m['n'] > self._read and not m.get('old') and m.get('sender_name') != 'YOU'
+            # the game's own rows (YOU, HERBERT...) have no sender number; a pilot's always has one, whatever their name
+            return any(m['n'] > self._read and not m.get('old')
+                       and not (m.get('sender_name') == 'YOU' and m.get('sender_number') is None)
                        and (m['priority'] in ('distress', 'urgency')
                             or (m['channel'] == 'direct'
-                                and (m.get('sender_name') not in quiet_senders or m.get('text') in always)))
+                                and (m.get('sender_name') not in quiet_senders or m.get('sender_number') is not None
+                                     or m.get('text') in always)))
                        for m in self.messages)
 
     def mark_read(self):

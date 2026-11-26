@@ -19,7 +19,7 @@ class SharedPresence:
         self.docked = {}   # {player_id: {system: last seen docked}}, outlives the 10 s roster
         self.flying = {}
 
-    def exchange(self, player_id, name, data):
+    def exchange(self, player_id, name, data, number=None):
         if type(data) is not dict: raise ValueError('Presence object required')
         system,mode = data.get('system'),data.get('mode')
         session,sequence,epoch = data.get('session'),data.get('sequence'),data.get('epoch')
@@ -40,7 +40,7 @@ class SharedPresence:
                 if old['system'] == system and old['epoch'] == epoch and old['mode'] == mode == 'flight':
                     maximum = (now-old['seen'])*400+100
                     if math.dist(position,old['position']) > maximum: raise ValueError('Movement update too large')
-            self.players[player_id] = dict(id=player_id,name=name,system=system,mode=mode,
+            self.players[player_id] = dict(id=player_id,name=name,number=number,system=system,mode=mode,
                 position=list(position),velocity=list(velocity) if mode == 'flight' else [0.,0.,0.],
                 session=session,sequence=sequence,epoch=epoch,seen=now)
             self.players = {key:value for key,value in self.players.items() if now-value['seen'] < 10}
@@ -51,7 +51,7 @@ class SharedPresence:
                     if not history[pid]: del history[pid]
             public = []
             for player in list(self.players.values())[:MAX_LISTED]:
-                item = {key:player[key] for key in ('id','name','system','mode','position','velocity')}
+                item = {key:player[key] for key in ('id','name','number','system','mode','position','velocity')}
                 age = min(.75,max(0,now-player['seen']))
                 item['position'] = [p+v*age for p,v in zip(player['position'],player['velocity'])]
                 public.append(item)

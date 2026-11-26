@@ -27,15 +27,18 @@ import economy
 import examiner
 import herbert
 import licence
+import names
 import qr
 import herbert_view
 import payments
 import seal
+import save_sync
+import startup
 import stations
 import cockpit
 import secrets
 
-VERSION = '0.16.0'
+VERSION = '0.17.0'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
@@ -240,6 +243,23 @@ PROFILES = [
 SAVE = Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local/share') / 'riftdogs' / 'save.json'
 # Bug reports and suggestions wait here, one file each, until an online session sends them.
 FEEDBACK_OUTBOX = SAVE.parent / 'feedback-outbox'
+# Settings that belong to this computer, not the pilot (so not in the save): next to connection.json.
+PREFS_FILE = startup.config_path().with_name('prefs.json')
+
+
+def load_prefs():
+    """This computer's settings; a missing or damaged file gives the defaults."""
+    prefs = {'alarm_sound': True}
+    try:
+        saved = json.loads(PREFS_FILE.read_text())
+        if isinstance(saved.get('alarm_sound'),bool): prefs['alarm_sound'] = saved['alarm_sound']
+    except (OSError,ValueError,AttributeError): pass
+    return prefs
+
+
+def save_prefs(prefs):
+    try: save_sync.atomic(PREFS_FILE,json.dumps(prefs,sort_keys=True).encode())
+    except OSError: pass
 
 
 def static_price(system, good):
@@ -504,8 +524,9 @@ ROCK_CUTS = {'mining': (1, (3,)), 'pulse': (1, (2,)), 'beam': (1, (2,)), 'milita
 # Each system's near-station rock field: cut rocks regrow one by one, not on every launch.
 ROCK_FIELD = 3
 ROCK_REGROW = 30*60   # seconds before a cut rock is replaced
-SCOOP_SECONDS = 4.    # time to draw one tonne of ore or a canister into the hold
+SCOOP_SECONDS = 2.    # time to draw one tonne of ore or a canister into the hold
 SCOOP_RANGE = 260
+FRAGMENT_KEEP = 20000   # loose ore and canisters stay put until this far (m) from the ship
 # A pirate on your tail makes a firing pass after this long, overshooting into your sights;
 # braking hard (speed at or below PIRATE_BRAKE) makes it overshoot at once.
 PIRATE_PASS = 8.
@@ -943,7 +964,7 @@ class Pilot:
         if type(self.intro_seen) is not bool: raise ValueError('introduction')
         if type(self.edited) is not bool: raise ValueError('edited flag')
         if not herbert.valid_state(self.herbert): self.herbert = herbert.retired_state()
-        if not licence.valid_record(self.licence): self.licence = licence.new_record()
+        self.licence = licence.without_name_switch(self.licence) if licence.valid_record(self.licence) else licence.new_record()
         if not valid_ledger(self.ledger): raise ValueError('ledger')
         if not isinstance(self.trade_log,list) or len(self.trade_log) > TRADE_LOG_SIZE: raise ValueError('trade log')
         for entry in self.trade_log:
@@ -1373,6 +1394,7 @@ class Game:
         self.spawn = 12
         self.cooldown = self.flash = self.laser_flash = 0.
         self.alarm = self.alarm_silenced = None
+        self.alarm_sound = load_prefs()['alarm_sound']   # this computer's setting, not the save's
         self.enemy_shot = None
         self.message = 'Welcome back, Commander.' if loaded else 'Welcome, Commander. 9 manual; U ship outfitting.'
         if loaded and self.p.edited: self.message = EDITED_NOTICE
@@ -1396,6 +1418,17 @@ class Game:
         self.intro_return = 'market'
         self.intro_page = 0
         self.intro_name_skipped = False
+        self.pilot_card = None          # online: your own card from the STA registry (None offline, or not fetched)
+        self.registry_job = None        # the registry request on its worker thread
+        self.name_cache = {}            # pilot number -> its public history lookup (this session)
+        self.name_reports = []          # name reports on their worker threads
+        self.registry_fetched = False   # this session's card fetch has been started
+        self.choose_name_text = ''
+        self.choose_name_return = 'market'
+        self.choose_name_offered = False   # the name screen opens by itself once a session
+        self.registry_text = ''         # the STA registry screen's name field (VMS, then N)
+        self.rename_request = None      # dict(name, request_id): the rename waiting for a clear answer
+        self.registry_refresh = False   # fetch the card again once the registry is free
         self.trades_page = 0
         self.report_period = 1          # Money / Reports shows 0 today, 1 the last 7 days, 2 all time
         self.report_averages = None     # averages across commanders, from the shared market (online only)
@@ -1525,10 +1558,10 @@ class Game:
         for _ in range(6):
             if mode in ('market','outfit','departure','launch_warning','bank','jobs','exchange','trade_deal','redeem','prison'): return 'market'
             if mode == 'trades': mode = 'money'; continue
-            if mode == 'licence': mode = 'vms'; continue
+            if mode in ('licence','registry'): mode = 'vms'; continue
             if mode in ('flight','cruise','hyperspace','dead'): return mode
             if mode == 'hail': return 'flight'
-            attr = {'comms':'comms_return','money':'money_return','vms':'vms_return','help':'help_return','updates':'update_return','map':'map_return','menu':'menu_return','notes':'notes_return','rename':'rename_return','intro':'intro_return','feedback':'feedback_return','planet_profile':'map_return','engineering':'engineering_return','cargo':'cargo_return'}.get(mode)
+            attr = {'comms':'comms_return','money':'money_return','vms':'vms_return','help':'help_return','updates':'update_return','map':'map_return','menu':'menu_return','notes':'notes_return','rename':'rename_return','choose_name':'choose_name_return','intro':'intro_return','feedback':'feedback_return','planet_profile':'map_return','engineering':'engineering_return','cargo':'cargo_return'}.get(mode)
             if not attr: return 'flight'
             mode = getattr(self,attr,'flight')
         return 'flight'
@@ -1661,7 +1694,12 @@ class Game:
         self.alarm_beep = max(0,getattr(self,'alarm_beep',0)-dt)
         if self.alarm and self.alarm_beep <= 0:
             self.alarm_beep = 1.2
-            if self.d and hasattr(self.d,'beep'): self.d.beep([(880,.12),(0,.05),(660,.12)])
+            if self.alarm_sound and self.d and hasattr(self.d,'beep'): self.d.beep([(880,.12),(0,.05),(660,.12)])
+
+    def toggle_alarm_sound(self):
+        self.alarm_sound = not self.alarm_sound
+        save_prefs(dict(load_prefs(),alarm_sound=self.alarm_sound))
+        self.message = 'Alarm sound on.' if self.alarm_sound else 'Alarm sound off. Warnings still show on screen.'
 
     def silence_alarm(self):
         if not getattr(self,'alarm',None): return
@@ -1690,6 +1728,7 @@ class Game:
         self.surface_update_required()
         self.poll_inbox()
         self.poll_licence()
+        self.poll_registry()
         self.surface_rolled_back()
         self.resume_saved_payment()
         self.recheck_payment()
@@ -1729,7 +1768,7 @@ class Game:
         remote.rolled_back = None
         mode = self.mode
         self.adopt_server_save(save,remote.rejected_message)
-        if mode == 'redeem' and self.mode == 'market': self.mode = 'redeem'   # still docked: stay on Payment codes
+        if mode in ('redeem','registry') and self.mode == 'market': self.mode = mode   # still docked: stay on the screen
         if resume: self.resume_payment()
         return True
 
@@ -2344,7 +2383,7 @@ class Game:
         if rec['number'] is not None: self.request_licence('public')
 
     def toggle_public(self, field):
-        """The licence screen's Public/Private switch for one field (name, skills, check)."""
+        """The licence screen's Public/Private switch for one field (skills, check)."""
         public = dict(self.p.licence['public'])
         public[field] = not public[field]
         self.licence_set_public(public)
@@ -2428,7 +2467,7 @@ class Game:
         ok,line = self.licence_booking()
         if not ok: d.text(left,top+26,line,CREAM if rec['passed'] else GOLD)
         if rec['number'] is not None and self.licence_qr():   # only an issued licence from the official server has a page
-            d.text(left,top+142,'Public: shown on your riftdogs.com pilot page.',DIM)
+            d.text(left,top+142,'Choose which parts other pilots may see.',DIM)
 
     def licence_buttons(self):
         """The licence screen's buttons (drawn after the screen, like every screen's buttons)."""
@@ -2437,7 +2476,6 @@ class Game:
         ok,line = self.licence_booking()
         if ok: self.mouse_button(35,top+22,260,line,ord('b'))
         word = lambda f: 'Public' if rec['public'][f] else 'Private'
-        self.mouse_button(35,top+64,195,f'Name: {word("name")}  N',ord('n'))
         self.mouse_button(240,top+64,210,f'Skills: {word("skills")}  S',ord('s'))
         self.mouse_button(35,top+102,275,f'Check flight: {word("check")}  C',ord('c'))
         lessons = self.licence_lessons()
@@ -2500,7 +2538,7 @@ class Game:
         for (ax,ay),(bx,by) in zip(orbit,orbit[1:]): d.line(ax,ay,bx,by,cream)
         d.fill(int(orbit[15][0])-3,int(orbit[15][1])-3,6,6,cream)
         d.rect(rx,ry,rw,rh,navy)
-        name = p.name.upper()[:20] if number and rec['public']['name'] else ''
+        name = self.commander_name().upper()[:20]
         rows = [('LICENCE No.',number or ''),('ISSUED TO',name),('CALLSIGN',number or ''),('CLASS',licence.CLASS if number else ''),('RATING',None)]
         for i,(label,value) in enumerate(rows):
             y = ry+6+i*30
@@ -2572,7 +2610,8 @@ class Game:
             if type(number) is not str or not 0 < len(number) <= 32: raise ValueError('number')
             if type(issued) not in (int,float) or not math.isfinite(issued): raise ValueError('issued')
             if type(stars) is not int or not 0 <= stars <= 5: raise ValueError('stars')
-            if type(public) is not dict or set(public) != set(licence.PUBLIC_FIELDS) or any(type(v) is not bool for v in public.values()): raise ValueError('public')
+            public = licence.clean_public(public)
+            if public is None or any(type(v) is not bool for v in public.values()): raise ValueError('public')
         except (KeyError,TypeError,ValueError):
             self.message = "The STA's reply couldn't be read. Your pass is kept."
             return
@@ -2702,16 +2741,94 @@ class Game:
                 if type(player.get('position')) is not list or len(player['position']) != 3: continue
                 obj = self.other_players.get(player['id'],{}).get('object',[0.,0.,0.])
                 obj[:] = [self.station[j]+sum(player['position'][axis]*self.world_basis[axis][j] for axis in range(3)) for j in range(3)]
-                nearby[player['id']] = dict(name=player['name'],object=obj)
+                nearby[player['id']] = dict(id=player['id'],name=player['name'],number=player.get('number'),object=obj)
         self.other_players = nearby
 
     def player_label(self, obj):
-        return next(('PLAYER '+self.player_tag(p['name']) for p in self.other_players.values() if p['object'] is obj),None)
+        return next(('PLAYER '+self.player_tag(p) for p in self.other_players.values() if p['object'] is obj),None)
 
-    def player_tag(self, name):
-        """A nearby pilot's name, with their ship number when they are one of your contacts."""
-        number = next((c.get('number') for c in self.comms.contact_list() if c.get('name') == name), None)
-        return f'{name} {number}' if type(number) is str and comms_number(number) else name
+    def player_tag(self, other):
+        """A nearby pilot's name and pilot number. Pilots are told apart by number (names are not unique)."""
+        number = other.get('number')
+        return f'{other["name"]} {number}' if comms_number(number) else other['name']
+
+    def targeted_pilot(self):
+        """The roster entry of the nearby pilot you have targeted, or None."""
+        if self.ship_target is None: return None
+        return next((o for o in self.other_players.values() if o['object'] is self.ship_target),None)
+
+    # ---------- a pilot's public name history (Target page, comms contacts): looked up off-thread, cached for the session
+    NAME_RETRY = 30.   # seconds before a failed lookup is asked again
+
+    def pilot_history(self, number, name=None):
+        """The cached lookup for a pilot number ({state: 'wait'|'ok'|'fail', reply}), starting one on a worker
+        thread if there is none. `name` is the pilot's live name (presence, contacts): a lookup whose current name
+        differs from it is asked again once for that name, since the pilot has renamed. Never waits; None offline."""
+        remote = getattr(self,'remote_save',None)
+        if remote is None or not comms_number(number): return None
+        entry = self.name_cache.get(number)
+        renamed = (entry is not None and entry['state'] == 'ok' and type(name) is str and name != entry['for']
+                   and entry['reply'].get('name') != name)
+        if entry is not None and not renamed and (entry['state'] != 'fail' or time.monotonic()-entry['at'] < self.NAME_RETRY): return entry
+        entry = dict(state='wait',reply=None,at=time.monotonic(),done=threading.Event(),**{'for':name})
+        self.name_cache[number] = entry
+        def run():
+            try:
+                reply = remote.registry('lookup',number=number)
+                if type(reply['history']) is not list: raise ValueError('history')
+                entry['reply'],entry['state'] = reply,'ok'
+            except Exception: entry['state'] = 'fail'   # any failure must still finish the job
+            finally: entry['done'].set()
+        threading.Thread(target=run,name='lookup',daemon=True).start()
+        return entry
+
+    def history_lines(self, number, rows, name=None):
+        """[(text, colour)] for a pilot's former names, at most `rows` lines: FORMERLY, each name with its dates
+        (newest first), then +N more. Empty while the lookup is on its way or when there are none. `name`: as
+        pilot_history."""
+        entry = self.pilot_history(number,name)
+        if entry is None or entry['state'] == 'wait': return []
+        if entry['state'] == 'fail': return [('History not available.',DIM)]
+        history = [h for h in entry['reply']['history'] if type(h) is dict and type(h.get('name')) is str and type(h.get('at')) in (int,float)]
+        former = [(h['name'],h['at'],history[i]['at']) for i,h in enumerate(history[1:])]   # each ends where the next name began
+        if not former or rows < 2: return []
+        room = rows-1
+        shown = former if len(former) <= room else former[:room-1]
+        lines = [('FORMERLY',GOLD)]+[(f'{n}  {licence.sta_date(a)} – {licence.sta_date(b)}',GREEN) for n,a,b in shown]
+        if len(shown) < len(former): lines.append((f'+{len(former)-len(shown)} more',DIM))
+        return lines
+
+    def report_target_name(self):
+        """Tell the operator a targeted pilot's name is a problem (the server limits how often)."""
+        other,remote = self.targeted_pilot(),getattr(self,'remote_save',None)
+        if other is None or not comms_number(other.get('number')): return
+        if remote is None:
+            self.message = 'Names are reported online.'
+            return
+        job = dict(done=threading.Event(),error=None)
+        def run():
+            try: remote.registry('report',number=other['number'])
+            except Exception as error: job['error'] = error
+            finally: job['done'].set()
+        self.name_reports.append(job)
+        threading.Thread(target=run,name='report',daemon=True).start()
+
+    def poll_name_jobs(self):
+        """Game thread, every frame: say how a name report went."""
+        from save_sync import Refused
+        for job in [j for j in self.name_reports if j['done'].is_set()]:
+            self.name_reports.remove(job)
+            error = job['error']
+            if error is None: self.message = 'Name reported to the operator.'
+            elif isinstance(error,Refused): self.message = error.message
+            else: self.message = "The STA registry can't be reached. Try again."
+
+    def finish_name_jobs(self, timeout=10.):
+        """Wait for lookups and reports and apply them (tests; the game itself never waits)."""
+        deadline = time.monotonic()+timeout
+        for done in [e['done'] for e in self.name_cache.values() if e['state'] == 'wait']+[j['done'] for j in self.name_reports]:
+            done.wait(max(0.,deadline-time.monotonic()))
+        self.poll_name_jobs()
 
     @staticmethod
     def swept_ship_distance(start,end):
@@ -3023,9 +3140,261 @@ class Game:
         return min(5,sum(self.p.fine >= n for n in WANTED_FINES)+sum(map(bool,self.station_hostilities)))
 
     def commander_name(self):
-        # The name you chose wins; online accounts fall back to their server name.
+        # Online, the STA registry's name (or 'Pilot RD-xxxx' before one is chosen); offline, the name you chose.
         remote = getattr(self,'remote_save',None)
+        card = getattr(self,'pilot_card',None)
+        if remote is not None and card is not None: return card['name'] or f'Pilot {card["number"]}'
         return self.p.name or (remote and remote.player_name) or 'Unnamed'
+
+    def online_named(self):
+        """Online with a card that has a name: one chosen, renamed or reset (an unnamed card has no history)."""
+        card = getattr(self,'pilot_card',None)
+        return getattr(self,'remote_save',None) is not None and card is not None and bool(card['history']) and card['name'] is not None
+
+    def registry_busy(self):
+        return getattr(self,'registry_job',None) is not None
+
+    def request_registry(self, action, **body):
+        """Ask the STA registry on a worker thread ('me' for your card, 'choose' for a first name): the game never
+        waits on the network. poll_registry() applies the answer on the game thread. One request at a time."""
+        remote = getattr(self,'remote_save',None)
+        if remote is None or self.registry_busy(): return False
+        job = dict(action=action,done=threading.Event(),reply=None,error=None)
+        def run():
+            try: job['reply'] = remote.registry(action,**body)
+            except Exception as error: job['error'] = error   # any failure must still finish the job
+            finally: job['done'].set()
+        self.registry_job = job
+        threading.Thread(target=run,name='registry',daemon=True).start()
+        return True
+
+    # Never over the cockpit, a screen waiting for an answer, or one being typed in.
+    CHOOSE_NAME_BLOCKED = COCKPIT_MODES+HOLD_SCREENS+('choose_name','registry','feedback','notes','redeem','rename','menu')
+
+    def poll_registry(self):
+        """Game thread, every frame: fetch your card once a session, apply a finished request, and open the name
+        screen for an unnamed pilot once a session, when nothing more urgent is showing (Back leaves it; Menu,
+        Commander name says where to go)."""
+        self.poll_name_jobs()
+        if getattr(self,'remote_save',None) is None: return
+        if not self.registry_fetched and not self.registry_busy():
+            self.registry_fetched = True
+            self.request_registry('me')
+        job = self.registry_job
+        if job is not None and job['done'].is_set():
+            self.registry_job = None
+            self.apply_registry(job)
+        if self.registry_refresh and not self.registry_busy():
+            self.registry_refresh = False
+            self.request_registry('me')
+        card = self.pilot_card
+        if (card is not None and not self.choose_name_offered and not self.online_named()
+                and self.mode not in self.CHOOSE_NAME_BLOCKED and not getattr(self,'check_flight',None)):
+            self.choose_name_offered = True
+            self.choose_name_return,self.mode = self.mode,'choose_name'
+            self.choose_name_text = ''
+            self.keys.clear()
+            self.release_mouse()
+            self.alert = None
+
+    def apply_registry(self, job):
+        from save_sync import Refused
+        error,action = job['error'],job['action']
+        if job.get('stale'): return   # a card asked for before a rename: a fresh one is on its way
+        unreachable = "The STA registry can't be reached. Try again."
+        if action == 'me':
+            if error is None: self.set_pilot_card(job['reply'])
+            elif self.mode == 'choose_name': self.message = unreachable   # a refetch after choosing: ENTER asks again
+            return   # no card at the start: play carries on, nothing is asked
+        if isinstance(error,Refused):
+            self.message = error.message
+            if error.status == 403: self.request_registry('me')   # already named: the card says so, and closes the screen
+        elif error is not None: self.message = unreachable
+        else: self.request_registry('me')   # chosen: the card says so, and closes the screen
+
+    def set_pilot_card(self, reply):
+        """A card from the registry. The names table is authoritative: the save's name follows it (choose and the
+        operator's reset change the server copy without a new revision, so a stale name must never go back up)."""
+        try:
+            number,name,history = reply['number'],reply['name'],reply['history']
+            if type(number) is not str or not 0 < len(number) <= 32: raise ValueError('number')
+            if name is not None and type(name) is not str: raise ValueError('name')
+            if type(history) is not list: raise ValueError('history')
+        except (KeyError,TypeError,ValueError): return
+        self.pilot_card = dict(reply)
+        named = self.online_named()
+        self.p.name = name if named else f'Pilot {number}'
+        if named and self.mode == 'choose_name': self.mode = self.choose_name_return
+        self.checkpoint()
+
+    def finish_choose_name(self):
+        if self.registry_busy(): return
+        try: name = names.clean(self.choose_name_text)
+        except ValueError as error:
+            self.message = str(error)
+            return
+        self.choose_name_text = name
+        if self.request_registry('choose',name=name): self.message = 'Registering your name...'
+
+    def finish_registry(self, timeout=10.):
+        """Wait for in-flight registry requests and apply them (tests; the game itself never waits)."""
+        deadline = time.monotonic()+timeout
+        while self.registry_busy() and time.monotonic() < deadline:
+            self.registry_job['done'].wait(max(0.,deadline-time.monotonic()))
+            self.poll_registry()
+
+    # ---------- the STA registry (VMS, then N): docked and online, a rename is 500 cr cash, once a week ----------
+    REGISTRY_OFFLINE = 'Names are registered online. Offline, use Menu, then Commander name.'
+    REGISTRY_DOCK = 'Dock at a station to register a name.'
+
+    def registry_online(self):
+        return getattr(self,'remote_save',None) is not None and self.session_mode() == 'market' and not self.p.deep_space
+
+    def open_registry(self):
+        if getattr(self,'remote_save',None) is None:
+            self.message = self.REGISTRY_OFFLINE
+            return
+        if not self.registry_online():
+            self.message = self.REGISTRY_DOCK
+            return
+        self.mode = 'registry'
+        request = self.rename_request
+        self.registry_text = request['name'] if request else ''
+        self.text_selection_all = False
+        self.swallow_text = 'n'   # the N that opened it is not typed into the field
+        self.keys.clear()
+        self.release_mouse()
+        self.alert = None
+        self.refresh_card()
+
+    def refresh_card(self):
+        """Fetch your card again: now, or as soon as the registry is free. A card fetch already on its way may
+        predate a rename, so it is dropped."""
+        job = self.registry_job
+        if job is not None and job['action'] == 'me': job['stale'] = True
+        if not self.request_registry('me'): self.registry_refresh = True
+
+    def next_rename_at(self):
+        """When the week since your last rename is up, if it isn't yet (else None)."""
+        at = (self.pilot_card or {}).get('next_rename')
+        return at if type(at) in (int,float) and at > time.time() else None
+
+    def registry_button_label(self):
+        if self.pilot_card is not None and not self.online_named(): return 'Register name (free)'
+        return f'Register name, {names.RENAME_FEE} cr'
+
+    def submit_registry(self):
+        """ENTER on the registry screen. An unnamed pilot's first name is free ('choose'). A rename goes to the
+        server like a payment code: the save uploads first, one request id until a clear answer (so a lost reply
+        is never charged twice), and the reply is mirrored exactly."""
+        if self.inbox_blocks_input(): return
+        try: name = names.clean(self.registry_text)
+        except ValueError as error:
+            self.message = str(error)
+            return
+        self.registry_text = name
+        card = self.pilot_card
+        if card is None or not self.online_named():
+            if self.registry_busy(): self.message = 'Asking the STA registry...'
+            elif card is None:
+                self.message = "The STA registry can't be reached. Try again."
+                self.refresh_card()
+            elif self.request_registry('choose',name=name): self.message = 'Registering your name...'
+            return
+        if not self.registry_online():
+            self.message = self.REGISTRY_DOCK
+            return
+        request = self.rename_request
+        if request is None:
+            soon = self.next_rename_at()
+            if name == card['name']: self.message = 'That is already your name.'; return
+            if soon is not None: self.message = f'Next rename from {licence.sta_date(soon)}.'; return
+            if self.p.credits < names.RENAME_FEE: self.message = f'{names.RENAME_FEE} cr in cash needed.'; return
+            request = self.rename_request = dict(name=name,request_id=secrets.token_hex(16))
+        elif name != request['name']:
+            self.registry_text = request['name']
+            self.message = f"Finishing your rename to {request['name']} first. ENTER again sends it."
+            return
+        self.start_rename(request)
+
+    def start_rename(self, request, retried=False):
+        self.start_pay_job('rename','/v1/registry',dict(action='rename',name=request['name'],request_id=request['request_id']),retried=retried)
+
+    def rename_failed(self, job, error):
+        """A rename with no reply to mirror (call() has already released uploads)."""
+        from save_sync import Conflict, Refused
+        request = self.rename_request
+        if isinstance(error,Refused):
+            self.message = error.message
+            # A 400, 403 or 404 comes after the server's replay check: a clear no, so the next attempt is new.
+            if error.status in (400,403,404): self.rename_request = None
+            self.refresh_card()   # 'Next rename from...' and the like: the card shows why
+            return
+        if isinstance(error,Conflict):
+            # The server's save had moved on: take it, then ask once more against it (the same request id).
+            self.surface_rolled_back(resume=False)
+            if not job['retried'] and request is not None and self.registry_online():
+                self.start_rename(request,retried=True)
+                return
+            self.message = "The station's records changed. Try again. You won't be charged twice."
+            return
+        # No clear answer. If the server had settled, call() has fetched its save: adopt it, then ask again with
+        # the same request id, which replays a rename that landed rather than charging again.
+        self.surface_rolled_back(resume=False)
+        if not job['retried'] and request is not None and self.registry_online():
+            self.start_rename(request,retried=True)
+            return
+        self.message = "No clear answer from the STA registry. ENTER again retries; you won't be charged twice."
+
+    def mirror_rename(self, job):
+        """Apply the rename exactly as the server settled it (the fee, under 'STA registry', at the server's time)
+        and take the new name, then save and let uploads go. A reply that can't be mirrored takes the server copy."""
+        reply,remote = job['reply'],self.remote_save
+        self.rename_request = None   # answered: the server has it, whatever happens here
+        try:
+            if type(reply) is not dict: raise TypeError('reply')
+            name,at = reply['name'],reply['at']
+            if type(name) is not str or names.clean(name) != name: raise ValueError('name')
+            if type(at) not in (int,float) or at != at: raise ValueError('at')
+            if apply_settlement(self.p,reply['applied'],'STA registry',at) != reply['applied']: raise ValueError('diverged')
+        except (KeyError,TypeError,ValueError):
+            self.start_inbox_job('resync',remote.resync)
+            self.refresh_card()
+            return
+        self.p.name = name
+        card = self.pilot_card
+        if card is not None:
+            history = [entry for entry in card['history'] if not (type(entry) is dict and entry.get('at') == at and entry.get('how') == 'renamed')]
+            self.pilot_card = dict(card,name=name,history=[dict(name=name,at=at,how='renamed')]+history,next_rename=at+names.RENAME_WAIT)
+        self.registry_text = ''
+        self.message = f'Registered: you are now {name}. {names.RENAME_FEE} cr paid.'
+        self.refresh_card()
+        self.checkpoint()   # the mirrored save is offered while uploads are still held...
+        remote.release()    # ...so the first upload after the rename carries it
+
+    def draw_registry(self):
+        d,card = self.d,self.pilot_card
+        d.text(35,85,'STA REGISTRY',GOLD)
+        if card is None: d.text(45,130,'Fetching your card...')
+        else:
+            d.text(45,130,f"Pilot number: {card['number']}")
+            d.text(45,165,f"Name: {card['name']}")
+            d.text(45,210,'HISTORY',GOLD)
+            rows = [entry for entry in card['history'] if type(entry) is dict and type(entry.get('at')) in (int,float)][:5]
+            if not rows: d.text(45,245,'No name registered yet.',(135,175,185))
+            for i,entry in enumerate(rows):
+                d.text(45,245+i*28,f"{licence.sta_date(entry['at'])}  {str(entry.get('name',''))[:24]}  ({str(entry.get('how',''))[:8]})")
+        d.rect(35,380,BOX_W,60,GREEN)
+        if self.text_selection_all and self.text_selection_mode == 'registry': d.fill(40,385,max(20,len(self.registry_text)*11+20),42,(20,65,70))
+        self.text_cursor(45,400,self.registry_text)
+        d.text(45,505,f'Up to {names.MAX_LEN} letters, numbers, spaces, - or \'.')
+        if card is not None and not self.online_named():
+            d.text(45,540,'Register name (free): ENTER. Your first name is free.')
+        else:
+            d.text(45,540,f'Register name, {names.RENAME_FEE} cr: ENTER. Paid from cash, once a week.')
+            soon = self.next_rename_at()
+            if soon is not None: d.text(45,575,f'Next rename from {licence.sta_date(soon)}',GOLD)
+        d.text(45,615,'Back returns to the VMS. ESC saves and closes.')
 
     def station_allows(self, system=None):
         self.refresh_station_hostility()
@@ -3542,10 +3911,12 @@ class Game:
         if error is not None:   # call() has already released uploads
             if self.message == self.CONTACTING: self.message = before
             if job['kind'] in ('pay_create','pay_redeem'): return self.payment_failed(job,error)
+            if job['kind'] == 'rename': return self.rename_failed(job,error)
             if isinstance(error,Conflict): self.surface_rolled_back()
             elif isinstance(error,Refused): self.message = error.message
             return
         if job['kind'] in ('pay_create','pay_redeem'): return self.mirror_payment(job)
+        if job['kind'] == 'rename': return self.mirror_rename(job)
         texts = []
         try:
             for item in job['reply']['items']:
@@ -4090,7 +4461,9 @@ class Game:
         if self.mode == 'comms' and self.comms_number_typing: return self,'comms_number_text',7
         if self.mode == 'redeem': return (self,'pay_amount_text',6) if self.pay_field == 'amount' else (self,'credit_code_text',40)
         if self.mode == 'notes': return self.p,'notes',4000
-        if self.mode == 'rename' or (self.mode == 'intro' and self.intro_page == 0): return self.p,'name',24
+        if self.mode == 'rename' or (self.mode == 'intro' and self.intro_page == 0 and not self.intro_online()): return self.p,'name',24
+        if self.mode == 'choose_name': return self,'choose_name_text',names.MAX_LEN+4
+        if self.mode == 'registry': return self,'registry_text',names.MAX_LEN+4
         if self.mode == 'feedback': return self,'feedback_text',1500
         if self.mode == 'bank' and self.bank_custom is not None: return self,'bank_custom',9
         return None
@@ -4098,14 +4471,14 @@ class Game:
     def text_input(self, text):
         if self.inbox_blocks_input(): return
         swallow,self.swallow_text = getattr(self,'swallow_text',None),None
-        if swallow and text == swallow: return
+        if swallow and text.lower() == swallow: return
         field = self.active_text_field()
         if field is None: return
         owner,name,limit = field
         before = '' if self.text_selection_all and self.text_selection_mode == self.mode else getattr(owner,name)
         self.text_selection_all = False
         text = text.replace('\r\n','\n').replace('\r','\n')
-        text = ''.join(c for c in text if c.isprintable() or c == '\n' and self.mode not in ('redeem','rename','intro') and name != 'comms_line')
+        text = ''.join(c for c in text if c.isprintable() or c == '\n' and self.mode not in ('redeem','rename','choose_name','registry','intro') and name != 'comms_line')
         if name in ('bank_custom','pay_amount_text'): text = ''.join(c for c in text if c.isdigit())
         if name == 'comms_number_text': text = ''.join(c for c in text if c.isdigit() or c in 'RDrd-').upper()
         setattr(owner,name,(before+text)[:limit])
@@ -4123,7 +4496,7 @@ class Game:
             if action == 'paste':
                 text = self.d.clipboard_text()
                 if not text: self.message = 'Clipboard has no text.'; return
-                self.text_input(text.strip() if self.mode in ('redeem','rename') else text)
+                self.text_input(text.strip() if self.mode in ('redeem','rename','choose_name','registry') else text)
             elif action in ('copy','cut'):
                 self.d.set_clipboard(getattr(owner,name))
                 if action == 'cut': setattr(owner,name,''); self.text_selection_all = False
@@ -4163,7 +4536,7 @@ class Game:
 
     def draw_feedback(self):
         d = self.d
-        d.text(35,85,'BUG REPORTS AND SUGGESTIONS',GOLD)
+        d.text(35,85,'ALPHA TEST REPORT',GOLD)
         d.text(35,125,'Type what happened, steps to reproduce, and what you expected.')
         d.rect(35,205,BOX_W,305,GREEN)
         lines = []
@@ -4193,10 +4566,14 @@ class Game:
             'Online, some of the ships you meet are real pilots.']),
         ('YOU ARE NOT ALONE',[
             'An old hauler called Herbert will be in touch. He\'ll show you the ropes.',
-            'Found a bug, or have an idea? Press 0 and tell us.'])]
+            'This is an alpha test. Found a bug, or have an idea? Ctrl+0, from anywhere.'])]
+
+    def intro_online(self):
+        """Online the STA registry holds the name, so the opening pages don't ask for one."""
+        return getattr(self,'remote_save',None) is not None
 
     def intro_next(self):
-        if self.intro_page == 0:
+        if self.intro_page == 0 and not self.intro_online():
             self.p.name = self.p.name.strip()
             if not self.p.name and not self.intro_name_skipped:
                 self.intro_name_skipped = True
@@ -4227,7 +4604,7 @@ class Game:
                 d.text(45,y,line)
                 y += 26
             y += 16
-        if self.intro_page == 0:
+        if self.intro_page == 0 and not self.intro_online():
             d.text(45,y,'COMMANDER NAME',GOLD)
             d.rect(45,y+28,620,46,GOLD)
             if self.text_selection_all and self.text_selection_mode == 'intro' and self.p.name: d.fill(50,y+34,len(self.p.name)*11+8,34,(20,65,70))
@@ -4707,7 +5084,7 @@ class Game:
             d.text(45,535,f'Fuel {fuel_price(p.system)} cr/unit (sells for {fuel_price(p.system)*3//4}). Refill {p.fuel_cost()} cr / Service {p.service_cost()} cr')
         else:
             d.text(45,535,'Fuel, station repairs and fitting require docking. Field engineering remains available.')
-        d.text(45,625,'BACKSPACE returns. 1 opens Nav. 8 opens engineering. D Licence.')
+        d.text(45,625,'BACKSPACE returns. 1 opens Nav. 8 opens engineering. D Licence. N Registry.')
 
     def open_utility(self, target):
         if target == 'help':
@@ -4716,7 +5093,8 @@ class Game:
         elif target == 'notes':
             self.notes_return,self.mode = self.mode,'notes'
         elif target == 'rename':
-            self.rename_return,self.mode = self.mode,'rename'
+            if getattr(self,'remote_save',None) is not None: self.message = self.RENAME_ONLINE
+            else: self.rename_return,self.mode = self.mode,'rename'
         elif target == 'intro':
             self.intro_return,self.mode,self.intro_page = self.mode,'intro',0
             self.intro_name_skipped = False
@@ -4730,6 +5108,8 @@ class Game:
         self.release_mouse()
         self.alert = None
 
+    RENAME_ONLINE = 'Online, names are registered at the STA registry: VMS, then N.'
+
     def menu_actions(self):
         return [
             ('Quit',self.request_exit),   # was the top bar's Quit; it saves first, like Esc
@@ -4738,6 +5118,7 @@ class Game:
             ('Report a bug / Ctrl+0',lambda:self.open_utility('feedback')),
             ('Check updates',lambda:self.open_utility('updates')),
             ('Fullscreen / Ctrl+M',self.mouse_fullscreen),
+            ('Alarm sound: '+('On' if self.alarm_sound else 'Off'),self.toggle_alarm_sound),
             ('Commander name',lambda:self.open_utility('rename')),
             ('Introduction',lambda:self.open_utility('intro'))]
 
@@ -4748,7 +5129,7 @@ class Game:
     MENU_ITEM_W = (BOX_W-20)//2   # two columns across the content area
 
     def menu_item_position(self, i):
-        return 35+(i%2)*(self.MENU_ITEM_W+20),200+(i//2)*110
+        return 35+(i%2)*(self.MENU_ITEM_W+20),200+(i//2)*88
 
     def draw_menu(self):
         d = self.d
@@ -4760,7 +5141,7 @@ class Game:
         d.text(35,155,(remote.update_required or remote.status) if remote else 'Offline game: progress saved on this laptop.',status_color)
         presence = getattr(self,'presence',None)
         if presence: d.text(35,180,presence.status+(' · '+self.market_client.status if self.market_client else ''),(140,185,255))
-        descriptions = ['Save current state and close','Key bindings and flight help','Your saved private notes','Bug reports and suggestions','Check for game updates','Toggle display size','Name shown on your status panel','Who you are and how to play']
+        descriptions = ['Save current state and close','Key bindings and flight help','Your saved private notes','Bug reports and suggestions','Check for game updates','Toggle display size','Beeps for danger; warnings still show','Name shown on your status panel','Who you are and how to play']
         for i,description in enumerate(descriptions):
             x,y = self.menu_item_position(i)
             d.text(x+10,y+42,description,(135,175,185))
@@ -4784,6 +5165,8 @@ class Game:
         if k != 27 and self.inbox_blocks_input(): return
         if ctrl and k == ord('0'): return self.toggle_feedback()
         if ctrl and k == ord('5'): return self.toggle_comms_page()
+        if ctrl and k == ord('t') and self.mode in ('flight','cruise') and self.middle.page == 'target' and self.targeted_pilot() is not None:
+            return self.report_target_name()   # not R: that is the docking clearance in flight
         if self.mode == 'comms' and not ctrl and self.comms_page_key(k): return
         if k == 27 or self.typing(): return self.key(k)   # Esc, and typing into text fields, as before
         if k == ord('p') and not ctrl and self.comms_shown(): return self.cycle_comms_priority()
@@ -4987,7 +5370,7 @@ class Game:
         sender = message.get('sender_name') if type(message.get('sender_name')) is str else ''
         number = message.get('sender_number')
         channel = message.get('channel')
-        if sender == 'YOU': who = 'YOU > '+self.comms_channel_label(channel if type(channel) is str else 'ch16')
+        if sender == 'YOU' and number is None: who = 'YOU > '+self.comms_channel_label(channel if type(channel) is str else 'ch16')   # a pilot's row always has a number
         else: who = (sender or '?')+(' '+number if comms_number(number) else '')
         text = message.get('text') if type(message.get('text')) is str else ''
         text = ''.join(c if c.isprintable() else ' ' for c in text)
@@ -4997,7 +5380,7 @@ class Game:
     def comms_color(self, message):
         if message.get('priority') in ('distress','urgency'): return RED
         if message.get('priority') == 'safety': return GOLD
-        if message.get('sender_name') == 'YOU': return (135,175,185)
+        if message.get('sender_name') == 'YOU' and message.get('sender_number') is None: return (135,175,185)
         return DIRECT_COLOR if message.get('channel') == 'direct' else GREEN
 
     def panel_button(self, x, y, w, label, action, into=None):
@@ -5140,7 +5523,7 @@ class Game:
 
     def comms_nearby(self):
         """Pilots you may offer your number to, by the presence roster: docked at your station, or flying in this
-        system within hail range (the server's rule). [(roster id, name, metres or None when docked)]"""
+        system within hail range (the server's rule). [(roster id, name, metres or None when docked, pilot number or None)]"""
         presence = getattr(self,'presence',None)
         snapshot = getattr(presence,'snapshot',None) if presence is not None else None
         if type(snapshot) is not dict or type(snapshot.get('players')) is not list: return []
@@ -5152,13 +5535,14 @@ class Game:
             if player.get('system') != self.p.system or player.get('mode') != mine['mode']: continue
             name = player.get('name') if type(player.get('name')) is str else '?'
             name = ''.join(c for c in name if c.isprintable())[:24]
+            number = player.get('number') if comms_number(player.get('number')) else None
             if mine['mode'] == 'docked':
-                found.append((player['id'],name,None))
+                found.append((player['id'],name,None,number))
                 continue
             position = player.get('position')
             if type(position) is not list or len(position) != 3 or any(type(v) not in (int,float) for v in position): continue
             reach = math.dist(mine['position'],position)
-            if reach <= COMMS_HAIL_RANGE: found.append((player['id'],name,reach))
+            if reach <= COMMS_HAIL_RANGE: found.append((player['id'],name,reach,number))
         return found
 
     def comms_contact_rows(self, view):
@@ -5174,7 +5558,7 @@ class Game:
         head('CONTACTS')
         for c in contacts:
             number,name = c['number'],clean(c.get('name'))
-            rows.append(dict(text=f'{name}  {number}',actions=[('Block',lambda n=number,m=name:self.comms_block(n,m)),
+            rows.append(dict(text=f'{name}  {number}',number=number,name=name,actions=[('Block',lambda n=number,m=name:self.comms_block(n,m)),
                                                                 ('Report',lambda n=number:self.comms_report(n,view))]))
         if not contacts: note('No contacts yet. Offer your number to a pilot nearby, or type one in.')
         requests = [r for r in view['requests'] if comms_number(r.get('number'))]
@@ -5182,7 +5566,7 @@ class Game:
             head('CONTACT REQUESTS')
             for r in requests:
                 number,name = r['number'],clean(r.get('name'))
-                rows.append(dict(text=f'{name}  {number} would like to be a contact',actions=[
+                rows.append(dict(text=f'{name}  {number} would like to be a contact',number=number,name=name,actions=[
                     ('Accept',lambda n=number:self.comms_act('accept',f'COMMS: accepting {n} as a contact.',number=n)),
                     ('Ignore',lambda n=number:self.comms_ignore(n)),
                     ('Block',lambda n=number,m=name:self.comms_block(n,m))]))
@@ -5191,12 +5575,12 @@ class Game:
             head('BLOCKED')
             for b in blocked:
                 number,name = b['number'],clean(b.get('name'))
-                rows.append(dict(text=f'{name}  {number}',actions=[('Unblock',lambda n=number:self.comms_unblock(n))]))
+                rows.append(dict(text=f'{name}  {number}',number=number,name=name,actions=[('Unblock',lambda n=number:self.comms_unblock(n))]))
         head('NEARBY')
         nearby = self.comms_nearby()
-        for ship,name,reach in nearby:
+        for ship,name,reach,number in nearby:
             where = 'docked here' if reach is None else f'{reach/1000:.1f} km'
-            rows.append(dict(text=f'{name}  {where}',actions=[('Offer number',lambda s=ship,m=name:self.comms_act(
+            rows.append(dict(text=f'{name}{" "+number if number else ""}  {where}',actions=[('Offer number',lambda s=ship,m=name:self.comms_act(
                 'offer',f'COMMS: your number offered to {m}.',ship=s))]))
         if not nearby: note('No pilots docked here or within 1.5 km.' if getattr(self,'presence',None) else 'Offline game: no other pilots.')
         return rows
@@ -5224,12 +5608,13 @@ class Game:
                 'Distress+Urgency':lambda m:m.get('priority') in ('distress','urgency'),
                 'Unread':lambda m:type(m.get('n')) is int and m['n'] >= self.comms_unread_after and not m.get('old'),
                 'Contact':lambda m:self.comms_contact is not None and (m.get('sender_number') == self.comms_contact
-                    or (m.get('sender_name') == 'YOU' and m.get('channel') == self.comms_contact))}[f]
+                    or (m.get('sender_name') == 'YOU' and m.get('sender_number') is None and m.get('channel') == self.comms_contact))}[f]
         return [m for m in view['messages'] if keep(m)]
 
     def comms_calls(self, view):
         """Distress and urgency calls on the air (the DSC console's own alert is shown above them), newest first."""
-        return [m for m in reversed(view['messages']) if m.get('priority') in ('distress','urgency') and m.get('sender_name') != 'DSC']
+        return [m for m in reversed(view['messages']) if m.get('priority') in ('distress','urgency')
+                and not (m.get('sender_name') == 'DSC' and m.get('sender_number') is None)]   # a pilot called DSC has a number
 
     def acknowledge_selected_call(self):
         ship = self.disabled_ship
@@ -5330,7 +5715,7 @@ class Game:
         selectable = [i for i,row in enumerate(rows) if row['actions']]
         if selectable: self.comms_select %= len(selectable)
         chosen = selectable[self.comms_select] if selectable else None
-        fit = 11
+        fit = 8   # the rest of the page is the chosen contact's name history
         start = max(0,min((chosen or 0)-fit+2,len(rows)-fit))
         for line,i in enumerate(range(start,min(len(rows),start+fit))):
             row,y = rows[i],185+line*36
@@ -5344,6 +5729,10 @@ class Game:
                 w = len(label)*11+16
                 self.mouse_button(x,y,w,label,action=lambda a=action,s=selectable.index(i):(setattr(self,'comms_select',s),a()))
                 x += w+8
+        number = rows[chosen].get('number') if chosen is not None else None
+        if number:
+            d.text(45,482,f'{rows[chosen]["name"]}  {number}',CREAM)
+            for i,(text,color) in enumerate(self.history_lines(number,3,rows[chosen]['name'])): d.text(60,508+i*22,text,color)
 
     def draw_comms_distress(self, view):
         d,dim,ship = self.d,(135,175,185),self.disabled_ship
@@ -5378,8 +5767,10 @@ class Game:
         """Direct, distress and urgency messages from the last few seconds, newest first, on one line."""
         for message in reversed(items):
             sender = message.get('sender_name') if type(message.get('sender_name')) is str else ''
+            number = message.get('sender_number')
+            sender = (sender or '?')+(' '+number if comms_number(number) else '')   # Name RD-xxxx, as the log shows it
             text = message.get('text') if type(message.get('text')) is str else ''
-            line = ''.join(c if c.isprintable() else ' ' for c in f'{sender or "?"}: {text}')[:60]
+            line = ''.join(c if c.isprintable() else ' ' for c in f'{sender}: {text}')[:60]
             room = (right-x)//TICKER_CHAR
             if room < 12: break
             line = line[:room]
@@ -5441,7 +5832,7 @@ class Game:
                 self.menu_selected = (self.menu_selected+(-1 if k in (UP,LEFT) else 1))%len(self.menu_actions())
             elif k == 13: self.choose_menu_action(self.menu_selected)
             return
-        if k == 96 and self.mode not in ('feedback','notes','redeem','rename') and not (self.mode == 'map' and self.map_input):
+        if k == 96 and self.mode not in ('feedback','notes','redeem','rename','choose_name','registry') and not (self.mode == 'map' and self.map_input):
             self.menu_return,self.mode = self.mode,'menu'
             self.release_mouse()
             self.keys.clear()
@@ -5469,7 +5860,7 @@ class Game:
             elif k == ord('5'): self.hail_cargo()
             return
         if self.mode == 'intro':
-            naming = self.intro_page == 0
+            naming = self.intro_page == 0 and not self.intro_online()
             if k == 8 and naming: self.p.name = self.p.name[:-1]
             elif k in (13,RIGHT) or (k == 32 and not naming): self.intro_next()
             elif k == LEFT: self.intro_page = max(0,self.intro_page-1)
@@ -5481,6 +5872,15 @@ class Game:
         if self.mode == 'rename':
             if k == 8: self.p.name = self.p.name[:-1]
             elif k == 13: self.finish_rename()
+            return
+        if self.mode == 'choose_name':
+            if k == 8: self.choose_name_text = self.choose_name_text[:-1]
+            elif k == 13: self.finish_choose_name()
+            return
+        if self.mode == 'registry':
+            if k == 8 and self.registry_text: self.registry_text = self.registry_text[:-1]
+            elif k == 8: self.mouse_back()   # an empty field: Backspace is Back, to the VMS
+            elif k == 13: self.submit_registry()
             return
         if self.mode == 'redeem':
             owner,name,_ = self.active_text_field()
@@ -5509,6 +5909,7 @@ class Game:
             elif k == ord('8'):
                 self.engineering_return,self.mode = 'vms','engineering'
             elif k == ord('d'): self.mode = 'licence'; self.keys.clear()
+            elif k == ord('n'): self.open_registry()
             elif k in (ord('f'),ord('k'),ord('r'),ord('u'),ord('l')):
                 if self.vms_return != 'market': self.message = 'Dock before using station vessel services.'
                 elif k == ord('f'): self.message = self.p.refuel(); self.checkpoint()
@@ -5520,7 +5921,7 @@ class Game:
         if self.mode == 'licence':
             if k == ord('d'): self.mode = 'vms'   # Backspace (Back) too; Esc saves and closes, as everywhere
             elif k == ord('b'): self.licence_book()
-            elif k in (ord('n'),ord('s'),ord('c')): self.toggle_public({ord('n'):'name',ord('s'):'skills',ord('c'):'check'}[k])
+            elif k in (ord('s'),ord('c')): self.toggle_public({ord('s'):'skills',ord('c'):'check'}[k])
             elif k == ord('a') and self.licence_lessons(): self.ask_herbert_lesson(self.licence_lessons()[0])
             return
         if self.mode == 'money':
@@ -6179,10 +6580,12 @@ class Game:
             if not self.p.deep_space: return self.station_beacon(),w['name']+' / PORT '+self.active_port()
             return [0.,0.,500.],w['name']+' / ARRIVED'
         if self.nav == 'asteroid':
-            objects = self.fragments or self.asteroids
+            # the nearest rock, or ore and canisters on the scanner: a canister drifting far off never takes the beacon
+            near = [f for f in self.fragments if sum(v*v for v in f[:3]) <= SCANNER_RANGE*SCANNER_RANGE]
+            objects = self.asteroids+near
             if objects:
                 nearest = min(objects,key=lambda r: sum(v*v for v in r[:3]))
-                return nearest,self.fragment_label(nearest) if self.fragments else 'ASTEROID'
+                return nearest,'ASTEROID' if any(nearest is r for r in self.asteroids) else self.fragment_label(nearest)
         if self.nav == 'sun': return self.sun,'SUN'
         if self.nav == 'planet' and not self.p.deep_space: return self.planet,SYSTEMS[self.p.system][0].upper()
         if self.p.deep_space: return None,'DEEP SPACE'
@@ -6223,7 +6626,7 @@ class Game:
         contacts += [('trader',t['object'],'TRADER '+t['name'].upper(),(205,205,215)) for t in self.traffic]
         for rock in self.asteroids: contacts.append(('object',rock,{8:'GOLD ROCK',9:'SILVER ROCK'}.get(rock[4] if len(rock) > 4 else 2,'ASTEROID'),GOLD))
         for ore in self.fragments: contacts.append(('object',ore,self.fragment_label(ore),(150,190,255)))
-        contacts += [('player',p['object'],'PLAYER '+self.player_tag(p['name']),(140,185,255)) for p in self.other_players.values()]
+        contacts += [('player',p['object'],'PLAYER '+self.player_tag(p),(140,185,255)) for p in self.other_players.values()]
         contacts.append(('object',self.sun,'SUN',GOLD))
         contacts += [('object',beacon,'BEACON',GOLD) for beacon in self.check_objects()]
         return contacts
@@ -6391,6 +6794,7 @@ class Game:
         if sum(self.p.cargo) >= self.p.capacity: return distance,'SCOOP: HOLD FULL',False
         if abs(self.speed) > 50: return distance,'SCOOP: SLOW BELOW 50',False
         if distance >= SCOOP_RANGE: return distance,f'SCOOP: CLOSE TO {SCOOP_RANGE} m',False
+        if not self.below_nose(self.nearest_fragment()): return distance,'SCOOP: BRING IT BELOW THE NOSE',False
         return distance,f'SCOOP: COLLECTING {min(99,int(100*getattr(self,"scoop_progress",0.)/SCOOP_SECONDS))}%',True
 
     def draw_scanner(self):
@@ -6507,8 +6911,31 @@ class Game:
     def nearest_fragment(self):
         return min(self.fragments,key=lambda f: sum(v*v for v in f[:3]),default=None)
 
+    def below_nose(self, fragment):
+        """True if the piece is ahead and shows in the lower half of the forward view (same projection as the draw)."""
+        if fragment is None or fragment[2] <= 0: return False
+        x,y,z = fragment[:3]
+        if z <= 5: return True
+        c,s = math.cos(self.roll),math.sin(self.roll)
+        return cockpit.VIEW_CENTRE[1]+(-x*s+y*c)*cockpit.VIEW_SCALE/z > cockpit.VIEW_CENTRE[1]
+
+    def bounce_fragments(self):
+        """Pieces that touch the hull anywhere but below the nose bounce off to just outside scoop range."""
+        if 'scoops' not in self.p.equipment or sum(self.p.cargo) >= self.p.capacity or abs(self.speed) > 50: return False
+        bounced = False
+        for f in self.fragments:
+            distance = math.sqrt(sum(v*v for v in f[:3]))
+            if distance >= SCOOP_RANGE or self.below_nose(f): continue
+            k = (SCOOP_RANGE+40)/distance if distance > 1e-6 else 0.
+            if k: f[0],f[1],f[2] = f[0]*k,f[1]*k,f[2]*k
+            else: f[2] = SCOOP_RANGE+40
+            bounced = True
+        if bounced: self.message = 'Bounced off the hull. Bring it in below the nose.'
+        return bounced
+
     def auto_scoop_ore(self, dt=0.):
         """Fitted scoops draw the nearest piece in while you fly slowly close by: SCOOP_SECONDS a tonne."""
+        if self.bounce_fragments(): self.scoop_progress = 0.
         status = self.ore_status()
         if status is None or not status[2]:
             self.scoop_progress = 0.
@@ -6539,6 +6966,7 @@ class Game:
             return
         status = self.ore_status()
         if status is None or status[0] >= SCOOP_RANGE: self.message = f'Fly within {SCOOP_RANGE} m of an ore fragment.'
+        elif not status[2] and 'BELOW' in status[1]: self.message = 'Bring it in below the nose.'
         elif sum(self.p.cargo) >= self.p.capacity: self.message = 'Cargo hold full.'
         elif abs(self.speed) > 50: self.message = 'Slow below 50 to collect ore.'
         else: self.message = f'Drawing in ore: {status[1].split()[-1]}. Hold course; each tonne takes {SCOOP_SECONDS:.0f} s.'
@@ -6766,7 +7194,7 @@ class Game:
         self.update_mines(dt)
         if self.mode == 'dead': return
         self.update_traffic(dt)
-        self.fragments[:] = [f for f in self.fragments if f[2] > -300]
+        self.fragments[:] = [f for f in self.fragments if sum(v*v for v in f[:3]) <= FRAGMENT_KEEP**2]
         for star in self.stars:
             star[0] -= dx*0.5
             star[1] -= dy*0.5
@@ -7376,7 +7804,7 @@ class Game:
         d = self.d
         # The top bar: keys 1-9 on every screen, except while typing a name, note, report or code, and in prison
         # or the introduction (which wait for an answer).
-        if self.mode not in ('feedback','notes','redeem','rename','prison','intro'):
+        if self.mode not in ('feedback','notes','redeem','rename','choose_name','registry','prison','intro'):
             y = cockpit.TOP_BAR_Y
             for x,w,label,n in TOP_BAR:
                 lit = self.mode in TOP_BAR_LIT[n]
@@ -7421,6 +7849,7 @@ class Game:
             else:
                 self.mouse_button(35,575,300,'Engineering 8',ord('8'))
                 self.mouse_button(350,575,300,'Licence D',ord('d'))
+            self.mouse_button(800,145,240,'Registry N',ord('n'))
             self.mouse_button(35,674,1000,'Return',action=self.mouse_back)
         elif self.mode == 'licence':
             self.licence_buttons()
@@ -7472,6 +7901,14 @@ class Game:
             self.mouse_button(35,315,160,'Paste',action=lambda:self.handle_clipboard('paste'))
             self.mouse_button(210,315,160,'Select all',action=lambda:self.handle_clipboard('select_all'))
             self.mouse_button(35,674,1000,'Save name',action=self.finish_rename)
+        elif self.mode == 'choose_name':
+            self.mouse_button(35,315,160,'Paste',action=lambda:self.handle_clipboard('paste'))
+            self.mouse_button(210,315,160,'Select all',action=lambda:self.handle_clipboard('select_all'))
+            self.mouse_button(35,674,1000,'Register name (free)',action=self.finish_choose_name)
+        elif self.mode == 'registry':
+            self.mouse_button(35,455,160,'Paste',action=lambda:self.handle_clipboard('paste'))
+            self.mouse_button(210,455,160,'Select all',action=lambda:self.handle_clipboard('select_all'))
+            self.mouse_button(35,674,1000,self.registry_button_label(),action=self.submit_registry)
         elif self.mode == 'notes':
             self.mouse_button(35,674,240,'Earlier',UP)
             self.mouse_button(290,674,240,'Later',DOWN)
@@ -7598,10 +8035,10 @@ class Game:
             self.message = 'Recovery offers declined. No salvage payment made.'
         else:
             returns = {'map':'map_return','help':'help_return','updates':'update_return',
-                       'menu':'menu_return','notes':'notes_return','rename':'rename_return','intro':'intro_return','feedback':'feedback_return',
+                       'menu':'menu_return','notes':'notes_return','rename':'rename_return','choose_name':'choose_name_return','intro':'intro_return','feedback':'feedback_return',
                        'money':'money_return','vms':'vms_return','outfit':'outfit_return',
                        'engineering':'engineering_return','cargo':'cargo_return','launch_warning':'launch_return','comms':'comms_return'}
-            fixed = {'licence':'vms','planet_profile':'map','redeem':'money','bank':'money','jobs':'money','trades':'money','reports':'money','hail':'flight',
+            fixed = {'licence':'vms','registry':'vms','planet_profile':'map','redeem':'money','bank':'money','jobs':'money','trades':'money','reports':'money','hail':'flight',
                      'exchange':'money','trade_deal':'market','departure':'market'}
             if self.mode in returns: self.mode = getattr(self,returns[self.mode],'market')
             elif self.mode in fixed: self.mode = fixed[self.mode]
@@ -7634,7 +8071,7 @@ class Game:
                 ('Steering','ARROWS + Q / E','LEFT/RIGHT roll, UP/DOWN pitch: roll then pull up to turn. Q/E rudder turns flat.'),
                 ('Look behind','F','Toggle rear view. Your course stays the same; a rear laser must be fitted.'),
                 ('Local navigation','CTRL + S / P / R / U','Select station, planet, rocks or sun. Gold dots and arrows show the bearing.'),
-                ('Pick up ore','O','Fit scoops. Stay within 260m of a fragment at speed 50 or below: 4 s a tonne. Cut rocks regrow in 30 min.')]),
+                ('Pick up ore','O','Fit scoops. Below the nose, within 260m, speed 50 or less: 2 s a tonne. Cut rocks regrow in 30 min.')]),
             ('Nav',[
                 ('Navigation','1','Click a planet or empty point. Planet profiles show coordinates and services.'),
                 ('Search and lock','/  C  ENTER','Search by name, enter coordinates, then lock. Mouse map clicks also lock.'),
@@ -7664,7 +8101,8 @@ class Game:
                 ('Earn fuel money','3 then J','Free dockside shifts pay 15-40 credits. Workshop practice earns engineering experience.'),
                 ('Payment codes','3 then R','Online and docked: pay another pilot with a code (1% fee), or redeem one.')]),
             ('Licence',[
-                ('Trade Dog Licence','VMS then D','Skills score as you fly. Pass Varga\'s check flight: online pilots are issued a card with a QR code. Herbert retires once you are licensed.')])]
+                ('Trade Dog Licence','VMS then D','Skills score as you fly. Pass Varga\'s check flight: online pilots are issued a card with a QR code. Herbert retires once you are licensed.'),
+                ('STA registry','VMS then N','Your pilot number is your identity. Rename while docked: 500 cr, once a week. Your first name is free.')])]
 
     def draw_help(self):
         d=self.d
@@ -7685,7 +8123,8 @@ class Game:
         d,p = self.d,self.p
         d.color(d.r,*SPACE,255)
         d.clear(d.r)
-        d.text(cockpit.TITLE_X,cockpit.TOP_BAR_Y+4,GAME_NAME.upper(),GREEN)
+        d.text(cockpit.TITLE_X,2,cockpit.TITLE,GREEN)   # RIFTDOGS ALPHA, stacked: the bar has no room for it on one line
+        d.text(cockpit.TITLE_X,24,'ALPHA',GOLD)
         self.draw_ticker()
         location = 'In transit' if self.mode == 'hyperspace' else 'Deep space' if p.deep_space or self.mode == 'cruise' else SYSTEMS[p.system][0]
         economy = '' if p.deep_space or self.mode in ('cruise','hyperspace') else f' / {SYSTEMS[p.system][1]} T{TECH[p.system]}'
@@ -7725,6 +8164,17 @@ class Game:
             remote = getattr(self,'remote_save',None)
             if remote and remote.player_name: d.text(45,360,f'Shown on your status panel. Other pilots online see your account name: {remote.player_name}.')
             d.text(45,415,'ESC saves and closes.')
+        elif self.mode == 'choose_name':
+            card = self.pilot_card or {}
+            d.text(35,85,'STA REGISTRY / COMMANDER NAME',GOLD)
+            d.text(45,180,f'Choose the name other pilots see. Until then you are Pilot {card.get("number","")}.')
+            d.rect(35,245,BOX_W,60,GREEN)
+            if self.text_selection_all and self.text_selection_mode == 'choose_name': d.fill(40,250,max(20,len(self.choose_name_text)*11+20),42,(20,65,70))
+            self.text_cursor(45,265,self.choose_name_text)
+            d.text(45,360,f'Up to {names.MAX_LEN} letters, numbers, spaces, - or \'. The first name is free.')
+            d.text(45,415,'ENTER registers it. Back returns. ESC saves and closes.')
+        elif self.mode == 'registry':
+            self.draw_registry()
         elif self.mode == 'redeem':
             self.draw_payment_codes()
         elif self.mode == 'trade_deal':
@@ -8109,7 +8559,7 @@ class Game:
             d.text(x0+w-8-len(kind)*11,y0+6,kind,GOLD)
         target = self.ship_target if self.ship_target is not None else self.enemy
         status = self.target_status()
-        pilot = next((other['name'] for other in self.other_players.values() if self.ship_target is not None and other['object'] is self.ship_target),None)
+        pilot = self.targeted_pilot()
         if self.mode != 'flight':
             # Cruise and hyperspace: where the ship is bound.
             heading('COURSE')
@@ -8121,8 +8571,8 @@ class Game:
             row(3,'IN TRANSIT',DIM)
         elif pilot is not None:
             heading('PILOT')
-            row(1,pilot,CREAM)
-            number = self.player_tag(pilot)[len(pilot):].strip()
+            row(1,pilot['name'],CREAM)
+            number = pilot.get('number') if comms_number(pilot.get('number')) else ''
             row(2,number or 'no ship number',GREEN if number else DIM)
             row(3,'RANGE '+self.range_text(math.sqrt(sum(v*v for v in self.ship_target[:3]))))
         elif status:
@@ -8329,14 +8779,23 @@ class Game:
 
     def draw_page_target(self, x, top, width):
         p = self.p
-        pilot = next((other['name'] for other in self.other_players.values() if self.ship_target is not None and other['object'] is self.ship_target),None)
+        other = self.targeted_pilot()
         target = self.ship_target if self.ship_target is not None else self.enemy
         status = self.target_status()
-        if pilot is not None:
-            number = self.player_tag(pilot)[len(pilot):].strip()
-            self.page_row(x,top,width,'PILOT '+pilot,CREAM)
-            self.page_row(x,top+23,width,'SHIP NUMBER '+(number or 'none'),GREEN if number else DIM)
-            self.page_row(x,top+46,width,'RANGE '+self.range_text(math.sqrt(sum(v*v for v in self.ship_target[:3]))))
+        if other is not None:
+            number = other.get('number') if comms_number(other.get('number')) else None
+            name = other['name']   # the live presence name: a session's lookup can be older than a rename
+            rng = 'RANGE '+self.range_text(math.sqrt(sum(v*v for v in self.ship_target[:3])))
+            self.page_row(x,top,width-len(rng)*11-11,'PILOT '+name,CREAM)
+            self.d.text(x+width-len(rng)*11,top,rng,GREEN)
+            self.page_row(x,top+22,width,'NUMBER '+(number or 'none'),GREEN if number else DIM)
+            if number is None: return
+            x0,y0,w,h = cockpit.MIDDLE
+            for i,(text,color) in enumerate(self.history_lines(number,(y0+h-6-(top+44))//22,name)):
+                self.page_row(x,top+44+i*22,width,text,color)
+            if getattr(self,'remote_save',None) is not None:
+                label = 'Report name Ctrl+T'
+                self.panel_button(x+width-len(label)*11-12,top+44,len(label)*11+12,label,self.report_target_name,self.middle_buttons)
             return
         if status:
             name,shield,hull = status

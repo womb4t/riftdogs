@@ -19,6 +19,7 @@ LOW_FUEL = 1.0        # units in the tank (of 7) he calls low even without a cou
 STAGES = ('waiting', 'offered', 'guiding', 'on_call', 'gone')
 EVENTS = ('bought', 'launched', 'course', 'jumped', 'clearance', 'docked', 'sold')
 STATE_KEYS = ('stage', 'step', 'trips', 'last_left', 'waved_off', 'plan', 'last_line', 'idle', 'nudged', 'since_intro')
+OPTIONAL_KEYS = ('alpha_said',)   # added once he has told the pilot about the alpha test; older saves lack it
 
 CALL_LINE = "Ah. Fresh meat. Herbert's the name: forty years hauling freight, thirty-eight of them legally. Want me to show you how it's done?"
 END_LINE = "That's the job. Now do it again without me. I'll be on the radio if you get stuck."
@@ -29,6 +30,8 @@ GOODBYE_LINE = "Clear skies, full holds. You're on your own now, rookie."
 LINES = {
     'call': (CALL_LINE,),
     'trip_done': (END_LINE,),
+    'alpha': ("One more thing, rookie. This whole outfit's still in alpha. Something breaks, Ctrl+0 and tell them about it. "
+              "They do read it, which is more than the STA ever did.",),
     # Said straight after the offer is answered, as its own line, so a new pilot knows where he lives.
     'call_hint': (
         "I'm on comms, 5, flying or docked. Ctrl+H if you want me sooner.",
@@ -211,7 +214,7 @@ for _face, _keys in (
         ('speaking', 'call_hint step_buy step_launch step_course step_jump step_clearance step_dock step_sell pick_up '
                      'nudge reoffer_later call_lost call_course clearance_now'),
         ('amused', 'done_buy done_launch done_course done_jump done_clearance done_dock launched_empty came_back '
-                   'nothing_to_sell even wave_off decline'),
+                   'nothing_to_sell even wave_off decline alpha'),
         ('serious', 'step_buy_broke left_unsold loss call_attack call_fuel call_fuel_docked'),
         ('thinking', 'step_buy_poor dock_elsewhere call_buy_plan call_buy call_cargo')):
     for _key in _keys.split(): FACE_OF[_key] = _face
@@ -247,7 +250,7 @@ LESSONS = {
                "SPACE fires the lasers, M a missile if you've bought one. Nose on him, trigger down.",
                "Well fought. I'd have done it quicker, but I'd have been younger."),
     'scooping': ("Fuel / cargo scoops are 525 cr at outfitting (U on the VMS screen): ore, canisters, even the sun.",
-                 "Under 50, within 260 m of ore: the scoops draw it in. Mining laser, 800 cr: optional.",
+                 "Under 50, ore below your nose within 260 m: the scoops draw it in. Mining laser, 800 cr: optional.",
                  "Ore in the hold. An honest living, rocks, if not a quick one."),
     'dsc': ("A DSC comms console is 450 cr at outfitting, tech 3 and up. Somebody's always worse off.",
             "Fitted, alerts show on the Distress tab: Ctrl+5 for the comms page. Acknowledge one to track it.",
@@ -295,7 +298,7 @@ def _num(v): return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 def valid_state(value):
     """True for a dict with exactly Herbert's keys and sane types (used when loading a save)."""
-    if not isinstance(value, dict) or set(value) != set(STATE_KEYS): return False
+    if not isinstance(value, dict) or not set(STATE_KEYS) <= set(value) <= set(STATE_KEYS+OPTIONAL_KEYS): return False
     v = value
     plan = v['plan']
     return (v['stage'] in STAGES
@@ -309,6 +312,7 @@ def valid_state(value):
             and (v['last_line'] is None or isinstance(v['last_line'], str))
             and _num(v['idle']) and v['idle'] >= 0
             and isinstance(v['nudged'], bool)
+            and isinstance(v.get('alpha_said', False), bool)
             and (v['since_intro'] is None or (_num(v['since_intro']) and v['since_intro'] >= 0)))
 
 
@@ -399,6 +403,14 @@ class Tutor:
         if step != self.state['step']:
             self.state['idle'], self.state['nudged'] = 0.0, False
         self.state['step'] = step
+
+    def _trip_end(self, ctx):
+        """His sign-off for a finished guided trip, and (once per pilot) the word about the alpha test."""
+        lines = [self._say('trip_done', ctx)]
+        if not self.state.get('alpha_said'):
+            self.state['alpha_said'] = True
+            lines.append(self._say('alpha', ctx))
+        return lines
 
     def _finish_guided_trip(self):
         state = self.state
@@ -536,7 +548,7 @@ class Tutor:
             if ctx.get('cargo', 0) <= 0:
                 # Nothing aboard to sell: the trip is flown, so the guided trip ends here rather than stalling.
                 self._finish_guided_trip()
-                return [self._say('nothing_to_sell', ctx), self._say('trip_done', ctx)]
+                return [self._say('nothing_to_sell', ctx)]+self._trip_end(ctx)
             self._move(STEPS.index('sell'))
             if plan is not None: elsewhere = ctx.get('system') != plan['system']
             else: elsewhere = bool(ctx.get('plan_system_name')) and ctx.get('system_name') != ctx['plan_system_name']
@@ -552,7 +564,7 @@ class Tutor:
             elif profit > 0: remark = self._say('profit', ctx, profit=f'{round(profit):,}')
             else: remark = self._say('loss', ctx, loss=f'{round(-profit):,}')
             self._finish_guided_trip()
-            return [remark, self._say('trip_done', ctx)]
+            return [remark]+self._trip_end(ctx)
 
         else:
             step = {'bought': 'buy', 'course': 'course', 'jumped': 'jump', 'clearance': 'clearance'}[name]

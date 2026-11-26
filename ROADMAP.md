@@ -12,7 +12,7 @@ Status as of 2026-11-26 (latest release 0.15.0):
 | --- | --- | --- | --- |
 | 1 | Open the doors | Done | 0.10: signed updates, server checks (enforcing), sealed saves, payment codes, invites; minimum client 0.11.0 |
 | 2 | First flight | Under way | Herbert (0.13, 0.14), two-port stations with Y guidance (0.14), the Trade Dog Licence and check flight (0.15). Still to come: route planner, help from the key bindings, first contracts |
-| 3 | Wider galaxy | Under way | riftdogs.com and the Riftdogs brand, every copy checking in (0.12). Still to come: Windows, lifting the 8-pilot limit, wider invites, sound |
+| 3 | Wider galaxy | Under way | riftdogs.com and the Riftdogs brand, every copy checking in (0.12). Next: a waitlist-only website with tester questions and referrals, an in-game waitlist that gates all play until a pilot is admitted, and an operator dashboard. Still to come: Windows, lifting the 8-pilot limit, wider invites, sound |
 | 4 | The ledger | Planned | |
 | 5 | Lawless space | Planned | Groundwork: ship numbers, channel 16 and Mayday calls (0.11) |
 | 6 | Credit and crews | Planned | |
@@ -147,6 +147,7 @@ Ideas, to be designed once the frontier is stable.
 - Storage centres with bay rentals; selling bays off-plan to fund new stations.
 - Personal bases with defences, owned and robot-crewed fleets, and shipyards. Installations that can be bought, rented or captured under server rules, with tenant protection settled first.
 - Any exchange between real money and credits only after full legal review. Nothing like it is enabled today, and nothing will be without published terms.
+- **Community worlds** (parked 2026-11-26, not designed yet): players host their own Riftdogs servers and worlds, paying for and moderating them. Riftdogs keeps what must stay central: pilot identity (pilot numbers, commander names and their history, licences), the bank (anything that moves credits between worlds or touches the real world goes through the Phase 4 ledger), the official server list and the brand and merch. A host registers a server for a revocable key; unregistered servers run as private worlds with nothing that carries over. Needs the Phase 4 ledger first, trademark and server licence terms (the code is MIT), and the legal review above for anything tied to real money.
 
 ---
 

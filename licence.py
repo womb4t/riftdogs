@@ -32,8 +32,8 @@ RETAKE_SECONDS = 1800
 STA_YEAR_OFFSET = 1281
 CLASS = 'TRADER'
 
-PUBLIC_FIELDS = ('name', 'skills', 'check')
-DEFAULT_PUBLIC = {'name': False, 'skills': False, 'check': False}
+PUBLIC_FIELDS = ('skills', 'check')   # the name is always public; old records may still carry a 'name' switch
+DEFAULT_PUBLIC = {'skills': False, 'check': False}
 
 RECORD_KEYS = ('skills', 'assessment', 'check', 'last_attempt', 'passed', 'number', 'issued', 'stars', 'public',
                'lesson', 'departed', 'note_pending', 'rescues')
@@ -62,6 +62,20 @@ def _num(v):
 
 def _int(v):
     return isinstance(v, int) and not isinstance(v, bool)
+
+
+def clean_public(pub):
+    """The public switches as a dict of exactly PUBLIC_FIELDS (an old 'name' switch is dropped), or None if malformed."""
+    if not isinstance(pub, dict) or not (set(PUBLIC_FIELDS) <= set(pub) <= set(PUBLIC_FIELDS) | {'name'}):
+        return None
+    if not all(isinstance(x, bool) for x in pub.values()): return None
+    return {k: pub[k] for k in PUBLIC_FIELDS}
+
+
+def without_name_switch(record):
+    """A valid record with any old public 'name' switch removed (in place; returned)."""
+    record['public'] = clean_public(record['public'])
+    return record
 
 
 def valid_record(value):
@@ -97,7 +111,7 @@ def valid_record(value):
     if value['stars'] is not None and not _int(value['stars']):
         return False
     pub = value['public']
-    if not (isinstance(pub, dict) and set(pub) == set(PUBLIC_FIELDS) and all(isinstance(x, bool) for x in pub.values())):
+    if clean_public(pub) is None:
         return False
     if value['lesson'] is not None and value['lesson'] not in SKILLS:
         return False

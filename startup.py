@@ -3,6 +3,7 @@ import ctypes as C
 import gzip
 import base64
 import json
+import names
 import os
 from pathlib import Path
 import re
@@ -74,7 +75,7 @@ def read_invite(code):
 
 
 def store_account(config, server, name, token):
-    token_file = config_path().with_name(name.lower()+'.token')
+    token_file = config_path().with_name((name if re.fullmatch(r'RD-\d+',name) else name.lower())+'.token')
     token_file.parent.mkdir(parents=True,exist_ok=True)
     fd = os.open(token_file,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
     with os.fdopen(fd,'w') as out: out.write(token+'\n')
@@ -170,8 +171,12 @@ def _ck():
     return checkin
 
 
+ALPHA_LINE = 'ALPHA TEST. Things will break. Ctrl+0 files a report from anywhere in the game, and we read every one.'
+
+
 class StartScreen:
-    deleting = None   # 'Delete my account' open: the commander name typed so far
+    deleting = None   # 'Delete my account' open: the pilot number typed so far
+    pilot = None      # the pilot number to type there, or None when it isn't known yet
     save_root = None  # the game's data folder (holds servers/<slot>); None: riftdogs.SAVE's folder
     welcome = None    # the email screen's form (email, news, privacy, account) while it is open
     checkin = None    # the CheckinClient, or None
@@ -318,8 +323,9 @@ class StartScreen:
 
     def submit_join(self):
         ck = _ck()
-        name,claim = self.signup['name'].strip(),self.state()['claim']
-        if not name: self.error = 'Choose a galaxy name: letters, numbers, _ or -.'; return
+        claim = self.state()['claim']
+        try: name = names.clean(self.signup['name'])
+        except ValueError as error: self.error = str(error); return
         if not claim: self.error = 'Your place is not ready yet. Try again after the next check-in.'; return
         folder = config_path().parent
         try:   # the claim works once, so check the login can be saved before using it up
@@ -328,13 +334,13 @@ class StartScreen:
         except OSError: self.error = 'Could not save your login. Check folder permissions.'; return
         self.error = 'Joining the galaxy...'
         self.draw()
-        try: player,token = ck.join_galaxy(claim,name)
+        try: login,name,token = ck.join_galaxy(claim,name)
         except (ValueError,OSError) as error: self.error = str(error); return
-        try: store_account(self.config,DEFAULT_SERVER,player,token)
+        try: store_account(self.config,DEFAULT_SERVER,login,token)
         except OSError: self.error = 'Joined, but your login could not be saved. Check folder permissions.'; return
         self.edit_state(lambda state: state.update(claim=None))
         self.signup,self.joining = None,False
-        self.error = f'Welcome aboard, {player}! Choose Online play.'
+        self.error = f'Welcome aboard, Commander {name}! Choose Online play.'
 
     def forget_computer(self):
         before,self.error = self.error,'Forgetting this computer...'
@@ -386,17 +392,18 @@ class StartScreen:
 
     def submit_signup(self):
         from save_sync import signup
-        name,email = self.signup['name'].strip(),self.signup['email'].strip()
-        if not name: self.error = 'Choose a pilot name: letters, numbers, _ or -.'; return None
+        email = self.signup['email'].strip()
+        try: name = names.clean(self.signup['name'])
+        except ValueError as error: self.error = str(error); return None
         self.error = 'Signing up...'
         self.draw()
         try:
-            token = signup(self.config['server'],name,email,allow_lan=True)
-            store_account(self.config,self.config['server'].rstrip('/'),name,token)
+            login,name,token = signup(self.config['server'],name,email,allow_lan=True)
+            store_account(self.config,self.config['server'].rstrip('/'),login,token)
         except (RuntimeError,ValueError) as error: self.error = str(error); return None
         except OSError: self.error = 'Could not reach the server. Check your connection, or play offline.'; return None
         self.signup = None
-        self.error = f'Welcome aboard, {name}! Choose Online play.'
+        self.error = f'Welcome aboard, Commander {name}! Choose Online play.'
         return None
 
     def form_event(self, kind, value, record, keys, limits):
@@ -456,7 +463,7 @@ class StartScreen:
                 if 70 <= x <= 370 and 550 <= y <= 596: self.submit_join()
                 elif 730 <= x <= 1030 and 550 <= y <= 596: self.signup,self.joining = None,False; self.error = ''
             elif kind == 'down' and value == 13: self.submit_join()
-            else: self.form_event(kind,value,self.signup,('name',),(32,))
+            else: self.form_event(kind,value,self.signup,('name',),(names.MAX_LEN,))
             return None
         if self.signup is not None:
             if kind == 'click':
@@ -469,7 +476,7 @@ class StartScreen:
             elif kind == 'down' and value == 13: return self.submit_signup()
             elif kind == 'text' and value.strip().startswith(INVITE_PREFIXES): self.invite_from_signup(value)
             elif kind == 'clipboard' and value == 'paste': self.invite_from_signup()
-            else: self.form_event(kind,value,self.signup,('name','email'),(32,254))
+            else: self.form_event(kind,value,self.signup,('name','email'),(names.MAX_LEN,254))
             return None
         if self.settings:
             keys = ('server','token_file')
@@ -483,7 +490,7 @@ class StartScreen:
                 elif 390 <= x <= 710 and 550 <= y <= 596: self.paste_invite()
                 elif 70 <= x <= 370 and 490 <= y <= 530: self.open_signup()
                 elif 390 <= x <= 710 and 490 <= y <= 530: self.forget_or_remove()
-                elif 730 <= x <= 1030 and 490 <= y <= 530: self.deleting,self.replace_field = '',False; self.error = ''
+                elif 730 <= x <= 1030 and 490 <= y <= 530: self.open_delete()
                 elif 730 <= x <= 1030 and 550 <= y <= 596: self.settings = False; self.error = ''
             elif kind == 'down':
                 if value == 9: self.field = 1-self.field; self.replace_field = False
@@ -561,10 +568,24 @@ class StartScreen:
         self.error = 'Your email is removed from the server. You will get no Riftdogs news.'
         return True
 
+    def open_delete(self):
+        """Open 'Delete my account', knowing the pilot number to type: a new login is the number; otherwise ask the server."""
+        self.pilot = None
+        account = self.account()
+        if account is not None:
+            stem = Path(account[1]).stem
+            if re.fullmatch(r'RD-\d{4,}',stem,re.I): self.pilot = stem.upper()
+            else:
+                self.error = 'Looking up your pilot number...'
+                self.draw()
+                from save_sync import pilot_number
+                self.pilot = pilot_number(*account,allow_lan=True)
+        self.deleting,self.replace_field,self.error = '',False,''
+
     def submit_delete(self):
         from save_sync import delete_account
         name = self.deleting.strip()
-        if not name: self.error = 'Type your commander name to confirm.'; return
+        if not name: self.error = 'Type your pilot number to confirm.'; return
         account = self.account()
         if account is None: return
         self.error = 'Deleting your account...'
@@ -626,7 +647,8 @@ class StartScreen:
             d.text(70,110,'DELETE MY ACCOUNT / '+self.config['server'],RED)
             d.text(70,155,'This deletes your commander, save, trade records and email from the server.')
             d.text(70,185,'It cannot be undone. Your offline pilot on this computer is not touched.')
-            d.text(70,250,'Type your commander name to confirm')
+            d.text(70,215,f'Your pilot number is {self.pilot}.' if self.pilot else 'Your pilot number is not known yet. Play online once, then try again.',GOLD)
+            d.text(70,258,'Type your pilot number to confirm')
             d.rect(70,295,960,44,RED)
             if self.replace_field and self.deleting: d.fill(76,301,len(self.deleting)*11+8,32,(70,20,20))
             d.text(80,305,self.deleting+('_' if int(time.monotonic()*2)%2 == 0 else ''),GOLD)
@@ -636,7 +658,8 @@ class StartScreen:
         elif self.joining:
             d.fill(40,90,1020,545,(5,15,25))
             d.text(70,110,'CHOOSE YOUR GALAXY NAME',GOLD)
-            d.text(70,155,'Letters, numbers, _ or -. Other pilots see this name.')
+            d.text(70,155,'Commander name')
+            d.text(70,255,names.MESSAGE+' Other pilots see this name.')
             d.rect(70,200,960,44,GOLD)
             text = self.signup['name'][-81:]
             if self.replace_field and text: d.fill(76,206,len(text)*11+8,32,(20,65,70))
@@ -647,7 +670,7 @@ class StartScreen:
         elif self.signup is not None:
             d.fill(40,90,1020,545,(5,15,25))
             d.text(70,110,'NEW PILOT SIGN-UP / '+self.config['server'],GOLD)
-            d.text(70,155,'Pilot name (letters, numbers, _ or -). Other pilots see this name.')
+            d.text(70,155,'Commander name. '+names.MESSAGE)
             d.text(70,250,'Email for Riftdogs news (optional)')
             for i,key in enumerate(('name','email')):
                 y = 200+i*95
@@ -708,6 +731,9 @@ class StartScreen:
             if queue:   # between the box (ends 592) and the buttons (start 631), lined up with the buttons
                 d.fill(40,596,1020,30,(5,15,25))
                 d.text(110,600,*(queue[0],) if queue[1] is None else queue)
+            else:       # nothing needs the space: the alpha notice, a little wider than the box (103 characters)
+                d.fill(40,596,1130,30,(5,15,25))
+                d.text(45,600,ALPHA_LINE,GOLD)
             join = self.can_join()
             for index,label in enumerate(('Join the galaxy' if join else 'Online play','Offline play','Connection settings')):
                 x = 110+index*300

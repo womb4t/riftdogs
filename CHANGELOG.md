@@ -1,3 +1,16 @@
+# 0.17.0 — names and the STA registry
+
+- **Your pilot number is your identity.** New pilots choose a commander name once: on the join form, at sign-up, or on the name screen at first login.
+- **The STA registry** (VMS, then N): rename while docked for 500 cr, once a week. Your first name is free.
+- **Other pilots see your commander name and pilot number.** The Target page and comms contacts show the pilot number, current name and former names with STA dates. Ctrl+T reports a name.
+- **The licence always shows your name.** The Name switch is gone.
+- **Deleting your account is confirmed with your pilot number.**
+- **The alpha test is obvious:** RIFTDOGS / ALPHA in the top bar, a line on the start screen, Ctrl+0 everywhere, Herbert says it once, and an ALPHA TEST REPORT screen.
+- **Menu → Alarm sound On/Off**, kept per computer. Warnings still show.
+- **Canisters and ore stay where they are** until you're 20 km away or leave the system. The scoop works on what's below the nose, otherwise it bounces off the hull: 2 s a tonne.
+- **Names can't pass for Riftdogs or the ship's computer.** Riftdog in any disguise (Rift-D0g, The Riftdogs...), YOU, DSC, Herbert and the radio voices are refused.
+- Server: update the server first, then raise its minimum game version to 0.17.0.
+
 # 0.16.0 — first flight, smoother
 
 - **Herbert calls every new pilot.** Leaving the opening pages with Back no longer leaves him waiting.
