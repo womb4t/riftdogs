@@ -35,7 +35,7 @@ import stations
 import cockpit
 import secrets
 
-VERSION = '0.15.0'
+VERSION = '0.16.0'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
@@ -126,8 +126,12 @@ MISSILE_SPEED = 1200
 # Fees a pilot can ask a disabled ship for restarting its drive (one unit of your fuel).
 HAIL_ASKS = (50, 120, 250)
 # Ship systems that start failing below these hull levels (%), worse the lower it goes.
-DAMAGE_FAULTS = {'scanner': 60, 'bearing': 45, 'laser': 30}
-FAULT_LABELS = {'scanner': 'SCANNER FAULT', 'bearing': 'BEARING OFFLINE', 'laser': 'LASER MALFUNCTIONING'}
+DAMAGE_FAULTS = {'scanner': 60, 'guidance': 50, 'bearing': 45, 'laser': 30}
+FAULT_LABELS = {'scanner': 'SCANNER FAULT', 'guidance': 'GUIDANCE OFFLINE', 'bearing': 'BEARING OFFLINE', 'laser': 'LASER MALFUNCTIONING'}
+GUIDANCE_DOWN = {   # why Y guidance is offline: the message when Y is pressed (or guidance drops out)
+    'damage': 'GUIDANCE OFFLINE: damage. Fly her in by hand; repairs at a station fix it.',
+    'wear': 'GUIDANCE OFFLINE: overdue a service. Fly her in by hand; a station service fixes it.',
+    'flare': 'GUIDANCE OFFLINE: solar flare. Fly her in by hand until it passes.'}
 UP, DOWN, LEFT, RIGHT = 1073741906, 1073741905, 1073741904, 1073741903
 F11, TAB = 1073741892, 9
 
@@ -1340,6 +1344,7 @@ class Game:
         self.station_laser_timer = 15.
         self.enemy_police_system = None
         self.course_assist = self.guidance_fresh = False
+        self.clearance_nudged = False
         self.fine_control = False
         self.enemy = None
         self.ship_target = None
@@ -1375,6 +1380,7 @@ class Game:
         self.stars = [[random.uniform(-1000,1000),random.uniform(-650,650),random.uniform(-1800,1800)] for _ in range(180)]
         self.broken_down = False
         self.breakdown_in = None
+        self.guidance_worn = False
         self.disabled_ship = self.hail = None
         self.explosions,self.missiles_in_flight = [],[]
         self.faults,self.fault_timer = set(),3.
@@ -1439,7 +1445,9 @@ class Game:
             self.p.book('trips')
             self.p.flights_since_service += 1
             self.p.maintenance = min(100,self.p.maintenance+self.p.departure_wear())
-        self.breakdown_in = random.uniform(8,25) if departure and random.random() < self.breakdown_risk() else None
+        spared = self.faults_spared()   # Herbert's pilots are learning: nothing on the ship goes wrong
+        self.breakdown_in = random.uniform(8,25) if departure and not spared and random.random() < self.breakdown_risk() else None
+        self.guidance_worn = departure and not spared and random.random() < self.breakdown_risk()
         self.broken_down = False
         self.disabled_ship = self.hail = None
         self.explosions,self.missiles_in_flight = [],[]
@@ -1456,8 +1464,9 @@ class Game:
         self.mouse_controls = False
         self.rear_view = False
         self.views_seen = dict(rear=False,target=False)
-        self.station = [0.,0.,1500.] if not self.p.deep_space else [0.,0.,1e9]
-        self.station_axis = unit_vector(self.station)   # port A faces you, the hull behind it
+        # Leaving, you fly out of the port with the station behind you; arriving from hyperspace, it is ahead.
+        self.station = [0.,0.,1e9] if self.p.deep_space else [0.,0.,-1500. if departure else 1500.]
+        self.station_axis = unit_vector(self.station)   # port A faces you, the hull beyond it
         self.planet = [-600.,240.,2400.]
         self.planet_radius = 70 + PROFILES[self.p.system][2]/100
         self.flyby_min = float('inf')
@@ -1478,6 +1487,7 @@ class Game:
         self.roll = self.station_angle = 0.
         self.autodock = False
         self.course_assist = self.guidance_fresh = False
+        self.clearance_nudged = False   # Herbert's "R now" inside the corridor, once a flight
         self.nav_target = None
         self.nav = 'course' if self.p.waypoint and galactic_distance(self.p.position,self.p.waypoint['position']) > .001 else 'station'
         self.heat = 0
@@ -1875,8 +1885,8 @@ class Game:
 
     def herbert_panel_key(self, k, ctrl=False):
         """While his panel is open: Tab and Right move the highlight on, Left back, Enter chooses (returns True: the key
-        is used). Any other key (Up/Down too: they pick the market's goods) closes the panel and goes on to do its
-        usual job (returns False)."""
+        is used). While he guides, the trading keys (Up/Down, B, S) do their job and leave the panel up. Any other key
+        closes the panel and goes on to do its usual job (returns False)."""
         panel = self.herbert_panel_here()
         if panel is None or k in self.HERBERT_MODIFIERS or getattr(self,'story',None): return False   # under a story window
         if not ctrl and k in (TAB,RIGHT,LEFT):
@@ -1885,8 +1895,12 @@ class Game:
         if not ctrl and k == 13:
             self.herbert_choose(panel['selected'])
             return True
+        if not ctrl and k in self.TRADING_KEYS and panel['choices'] == self.HERBERT_STEP:
+            return False   # guiding: buying and selling go on under his panel, which stays up with the instruction
         self.herbert_panel = None
         return False
+
+    TRADING_KEYS = (UP,DOWN,ord('b'),ord('s'))
 
     def herbert_panel_click(self, x, y):
         """A click on one of his choices runs it (True); anywhere else closes the panel and is handled as usual."""
@@ -2611,6 +2625,13 @@ class Game:
                 if self.tutor.offering():
                     if self.mode == 'market' and self.herbert_panel is None: self.herbert_reopen_offer()
                 else: self.herbert_say(self.tutor.reminder(self.herbert_context()))
+        if (state['stage'] == 'guiding' and self.mode == 'flight' and not self.clearance_nudged and not self.p.deep_space
+                and self.dock_clearance <= 0 and not self.docking_pending
+                and math.sqrt(sum(v*v for v in self.station)) <= cockpit.CORRIDOR_RANGE):
+            lines = self.tutor.clearance_now(self.herbert_context())
+            if lines:
+                self.clearance_nudged = True   # once a flight
+                self.herbert_say(lines)
         if state['stage'] == 'waiting':
             if self.mode != 'market': return   # the countdown waits for the docked screen: never over another screen or in flight
             if state['since_intro'] is not None: self.herbert_plan()   # current on the tick that fires the call
@@ -3692,6 +3713,24 @@ class Game:
         d.text(45,476,'Or fire on them: a destroyed ship spills cargo you can scoop, but lawful stations fine you.',(135,175,185))
         d.text(45,540,'BACKSPACE closes the channel.',(135,175,185))
 
+    def faults_spared(self):
+        """Herbert's lessons: his first trips (while he is on call) and a licence lesson. Nothing on the ship goes wrong."""
+        h = self.p.herbert
+        return (h['stage'] != 'gone' and h['trips'] < herbert.ON_CALL_TRIPS) or self.p.licence['lesson'] is not None
+
+    def guidance_down(self):
+        """Why Y guidance is offline ('damage', 'wear' or 'flare'), or None when it works."""
+        if self.faults_spared(): return None
+        if 'guidance' in self.faults: return 'damage'
+        if getattr(self,'guidance_worn',False): return 'wear'
+        if solar_flare() > 0: return 'flare'
+        return None
+
+    def fault_labels(self):
+        labels = {FAULT_LABELS[name] for name in self.faults}
+        if self.guidance_down(): labels.add(FAULT_LABELS['guidance'])
+        return sorted(labels)
+
     def handling(self):
         # A battered hull answers the controls slowly: 100% at full hull, 40% at zero.
         return .4+.6*max(0,min(100,self.p.hull))/100
@@ -3701,7 +3740,8 @@ class Game:
         if self.fault_timer > 0: return
         self.fault_timer = 3.
         before = set(self.faults)
-        self.faults = {name for name,limit in DAMAGE_FAULTS.items() if self.p.hull < limit and random.random() < .2+.6*(limit-self.p.hull)/limit}
+        self.faults = set() if self.faults_spared() else \
+            {name for name,limit in DAMAGE_FAULTS.items() if self.p.hull < limit and random.random() < .2+.6*(limit-self.p.hull)/limit}
         new = self.faults-before
         if new: self.message = 'DAMAGE: '+', '.join(FAULT_LABELS[name] for name in sorted(new))+'. Repairs at a station fix it.'
 
@@ -4143,24 +4183,17 @@ class Game:
 
     INTRO = [
         ('WELCOME, COMMANDER',[
-            f'You are a freelance starship commander. You start docked at Halvora station with a small trading ship, {START_CREDITS} credits, a pulse laser and three missiles. Nobody knows your name yet.',
-            'Eight star systems lie within reach, each with its own government, economy and technology. Lawful stations are patrolled and police their space; Anarchy and Feudal ports are frontier territory where anything goes.',
-            'First, what should we call you? Type your commander name below.']),
-        ('THE POINT OF THE GAME',[
-            'Make your fortune and your name. Buy low and sell high, upgrade your ship, and climb the ranks from Newbie to Legend. Kills, trading profit and hyperspace jumps all count.',
-            'Trade honestly, smuggle contraband for Crymto, or hunt pirates for bounties. Break the law and you face fines, station police and even prison.',
-            'Online, other commanders fly in the same universe: you will see their ships on your scanner.',
-            'The galaxy\'s trade rules are set by the Sovereign Trade Assembly (STA), its parliament. The Galactic Council runs the economy within them, and the STA Tally reports how it is doing.']),
-        ('HOW TO PLAY',[
-            'Docked: select cargo with UP / DOWN, then B buys and S sells. Food is cheap on agricultural worlds and sells well at industrial ones.',
-            'Nav (1), VMS (2), Money (3) and Menu (4) run along the top, and 0 always brings you home to the market or cockpit. VMS refuels, repairs and fits equipment.',
-            'L launches. In flight W / S set the throttle, LEFT / RIGHT roll, UP / DOWN pitch to turn, and Q / E are the rudder. In Nav, lock a destination, fly 5,000 m clear of the station, then hold H for 3 seconds to jump. Watch your fuel.',
-            'Near a station press R for docking clearance, then fly slowly into the slot, matching its roll. Within 5,000 m of a lawful station, pirates leave you alone.',
-            'BACKSPACE goes back. ESC saves and closes the game at any time. Menu, Controls has the full pilot handbook.']),
-        ('BUGS AND SUGGESTIONS',[
-            'Riftdogs is being built with its players. Found a bug or have an idea? Press 0 (or Menu, Report a bug), choose Bug report or Suggestion, describe it and click Log report.',
-            'Each report is logged on your computer and reaches the developers the next time this computer is online.',
-            'The game updates itself when a new version is released, so your idea might arrive in the next one. Good luck, Commander.'])]
+            f'A small ship, {START_CREDITS} credits and a name nobody knows yet.',
+            'What should we call you?']),
+        ('MAKE YOUR NAME',[
+            'Eight star systems. Buy low, sell high, and climb from Newbie to Legend.',
+            'Trade straight, smuggle, or hunt pirates. Break the law and the police come for you.']),
+        ('WHO RUNS THE GALAXY',[
+            'The Sovereign Trade Assembly (STA) makes the rules. Its Galactic Council runs the money.',
+            'Online, some of the ships you meet are real pilots.']),
+        ('YOU ARE NOT ALONE',[
+            'An old hauler called Herbert will be in touch. He\'ll show you the ropes.',
+            'Found a bug, or have an idea? Press 0 and tell us.'])]
 
     def intro_next(self):
         if self.intro_page == 0:
@@ -4172,6 +4205,11 @@ class Game:
         if self.intro_page < len(self.INTRO)-1:
             self.intro_page += 1
             return
+        self.finish_intro()
+
+    def finish_intro(self):
+        """The opening pages are done with, by Start flying or by Back: Herbert's call can come."""
+        self.p.name = self.p.name.strip()
         self.p.intro_seen = True
         self.tutor.intro_closed()
         self.mode = self.intro_return
@@ -4195,7 +4233,7 @@ class Game:
             if self.text_selection_all and self.text_selection_mode == 'intro' and self.p.name: d.fill(50,y+34,len(self.p.name)*11+8,34,(20,65,70))
             self.text_cursor(57,y+40,self.p.name)
             d.text(45,y+90,'You can change it any time under Menu, Commander name.',(135,175,185))
-        d.text(45,615,'ENTER or RIGHT continues. LEFT goes back a page. You can reopen this from Menu.',(135,175,185))
+        d.text(45,615,'ENTER continues. You can reopen this from Menu.',(135,175,185))
 
     def finish_rename(self):
         self.p.name = self.p.name.strip()
@@ -5787,7 +5825,9 @@ class Game:
         if k == ord('i'):
             self.fine_control = not self.fine_control
             self.message = 'Fine steering ON: arrows and roll at 20%.' if self.fine_control else 'Normal steering.'
-        if k == ord('y'):
+        if k == ord('y') and not self.course_assist and self.guidance_down():
+            self.message = GUIDANCE_DOWN[self.guidance_down()]
+        elif k == ord('y'):
             self.course_assist = not self.course_assist
             self.guidance_fresh = self.course_assist   # the first update refuses a target behind, the station too
             self.autodock = False
@@ -6663,6 +6703,9 @@ class Game:
             if not self.broken_down and self.p.fuel > 0:
                 self.turn_world(yaw,pitch)
             dx,dy = 0.,0.
+        if self.course_assist and self.guidance_down():
+            self.course_assist = False
+            self.message = GUIDANCE_DOWN[self.guidance_down()]
         if self.course_assist and not self.autodock:
             target,label = self.active_navigation()
             remote = self.nav == 'course' and self.p.waypoint and galactic_distance(self.p.position,self.p.waypoint['position']) > .001
@@ -7546,6 +7589,9 @@ class Game:
         if self.mode == 'map' and self.map_input:
             self.map_input = None
             return
+        if self.mode == 'intro':
+            self.finish_intro()
+            return
         if self.mode == 'distress':
             self.rescue = None
             self.mode = 'flight'
@@ -7957,7 +8003,8 @@ class Game:
             distance = f'{galactic_distance(p.position,p.waypoint["position"]):.2f} LY'
         else: distance = self.range_text(math.sqrt(sum(v*v for v in target[:3]))) if target is not None else ''
         d.text(right-12-len(distance)*11,top+6,distance,DIM)
-        if self.faults: d.text(left+12,top+28,damage_line([FAULT_LABELS[name] for name in sorted(self.faults)],room),RED)
+        labels = self.fault_labels()
+        if labels: d.text(left+12,top+28,damage_line(labels,room),RED)
         if self.flash: d.rect(left+1,top+1,width-2,height-2,RED)
         if self.alarm:
             bright = int(time.monotonic()*3)%2 == 0
@@ -8224,13 +8271,19 @@ class Game:
 
     def draw_page_docking(self, x, top, width):
         d,p = self.d,self.p
-        if p.deep_space or self.mode != 'flight' or sum(v*v for v in self.station) > 1e10:
+        if p.deep_space:
             self.page_row(x,top,width,'No station here.',DIM)
-            self.page_row(x,top+24,width,'The Docking page lights within 10 km of one.',DIM)
+            self.page_row(x,top+24,width,'Deep space: no station in radio range.',DIM)
+            return
+        name = SYSTEMS[p.system][0].upper()
+        if self.mode != 'flight' or sum(v*v for v in self.station) > 1e10:
+            # Far off (or cruising): which station, and how far. It shows how far you have come from it, too.
+            self.page_row(x,top,width,f'{name} STATION',GOLD)
+            self.page_row(x,top+23,width,f'RANGE {self.range_text(math.sqrt(sum(v*v for v in self.station)))}',GREEN)
             return
         r = self.port_readout()
         column = 24*11
-        rows = [(f'PORT {r["port"]} ({"FWD" if r["port"] == "A" else "AFT"})',GOLD)]
+        rows = [(f'{name} PORT {r["port"]}',GOLD)]
         if not self.docking_permitted(): rows.append(('CLEARANCE REFUSED',RED))
         elif self.arrest_pending(): rows.append(('SURRENDER ONLY',GOLD))
         elif r['clearance'] > 0: rows.append((f'CLEARANCE {r["clearance"]:.0f} s',GOLD))

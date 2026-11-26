@@ -1,3 +1,13 @@
+# 0.16.0 — first flight, smoother
+
+- **Herbert calls every new pilot.** Leaving the opening pages with Back no longer leaves him waiting.
+- **Shorter opening pages:** two lines each. Herbert teaches the keys.
+- **You launch facing away from the station**, flying out of the port. Arriving from hyperspace you still face it.
+- **Guidance first, clearance close in.** Herbert says Y for guidance, then R for clearance once inside 2.5 km on the Docking page, and reminds you as you cross it, so the 120 seconds don't run out on the way in.
+- **Herbert's instruction stays up while you trade.** UP/DOWN, B and S work under his panel while he guides you.
+- **Guidance can go offline.** Heavy damage (under 50% hull), a ship overdue its service, or a solar flare: GUIDANCE OFFLINE, and you fly her in by hand. Nothing on the ship goes wrong during Herbert's lessons.
+- **The Docking page always gives your range to the system's station**, near or far, cruising too.
+
 # 0.15.0 — the Trade Dog Licence
 
 - **The Trade Dog Licence.** A licence from the Sovereign Trade Assembly (STA) says you can fly. Open it from VMS, then D.

@@ -4,23 +4,25 @@ Riftdogs is a living galaxy you trade in. This roadmap shows the order we're bui
 
 The order is deliberate. **The first goal is getting as many people as possible playing for free.** Each later phase depends on the one before it: there's no piracy loot or insurance until every credit and tonne of cargo is properly accounted for, and no lending, clans or asset sales until money can't be faked. Real money comes last, if at all.
 
-Versions are targets, not promises. Each phase has a GitHub milestone with the same name. Offline play stays available throughout.
+Releases have overtaken the original version numbers: 0.13 to 0.15 went to Herbert, the new cockpit and the Trade Dog Licence, so phases no longer have version targets. Each phase has a GitHub milestone with the same name. Offline play stays available throughout.
 
-| Phase | Version | Theme | Status |
+Status as of 2026-11-26 (latest release 0.15.0):
+
+| Phase | Theme | Status | Shipped so far |
 | --- | --- | --- | --- |
-| 1 | 0.10 | Open the doors | Server live; game release next |
-| 2 | 0.11 | First flight | Designing |
-| 3 | 0.12 | Wider galaxy | Planned |
-| 4 | 0.13 | The ledger | Planned |
-| 5 | 0.14 | Lawless space | Planned |
-| 6 | 0.15 | Credit and crews | Planned |
-| 7 | 0.16 | Life on the lanes | Planned |
-| 8 | 1.0 | The frontier | Planned |
-| 9 | after 1.0 | Owners and exchange | Ideas |
+| 1 | Open the doors | Done | 0.10: signed updates, server checks (enforcing), sealed saves, payment codes, invites; minimum client 0.11.0 |
+| 2 | First flight | Under way | Herbert (0.13, 0.14), two-port stations with Y guidance (0.14), the Trade Dog Licence and check flight (0.15). Still to come: route planner, help from the key bindings, first contracts |
+| 3 | Wider galaxy | Under way | riftdogs.com and the Riftdogs brand, every copy checking in (0.12). Still to come: Windows, lifting the 8-pilot limit, wider invites, sound |
+| 4 | The ledger | Planned | |
+| 5 | Lawless space | Planned | Groundwork: ship numbers, channel 16 and Mayday calls (0.11) |
+| 6 | Credit and crews | Planned | |
+| 7 | Life on the lanes | Planned | |
+| 8 | The frontier | Planned | The licence is the pilot's way out of the 8 core systems once the frontier exists |
+| 9 | Owners and exchange | Ideas | |
 
 ---
 
-## Phase 1 — 0.10 Open the doors
+## Phase 1 — Open the doors
 
 **Goal:** make the shared galaxy safe to open to strangers.
 
@@ -34,14 +36,14 @@ Versions are targets, not promises. Each phase has a GitHub milestone with the s
 
 **Rollout:**
 1. Server deployed. *(Done, 2026-11-21.)*
-2. Release key created and pinned; 0.10.0 signed and published.
-3. A trial week, watching that no honest player is wrongly refused.
-4. 0.10.0 becomes the minimum version. Payment codes open.
-5. Players install and update from `womb4t/riftdogs`.
+2. Release key created and pinned; 0.10.0 signed and published. *(Done.)*
+3. A trial week, watching that no honest player is wrongly refused. *(Done.)*
+4. 0.10.0 becomes the minimum version. Payment codes open. *(Done.)*
+5. Players install and update from `womb4t/riftdogs`. *(Done.)*
 
 **Done when:** the trial week has passed with no honest player refused, and every known player is on 0.10.
 
-## Phase 2 — 0.11 First flight
+## Phase 2 — First flight
 
 **Goal:** a new player can learn to fly, dock, trade and fight without reading anything.
 
@@ -54,11 +56,12 @@ Versions are targets, not promises. Each phase has a GitHub milestone with the s
 
 **Done when:** a first-time tester gets from the start screen to their first profitable trade unaided, and first-hour drop-off is measured.
 
-## Phase 3 — 0.12 Wider galaxy
+## Phase 3 — Wider galaxy
 
 **Goal:** more players, on more machines.
 
 - A Windows build and installer.
+- **A double-click Mac installer** (parked 2026-11-26): a `.dmg` download from riftdogs.com instead of the one-line Terminal install. It needs an Apple Developer ID ($99 a year) to sign and notarise the app; without one, macOS blocks downloaded apps with an "Apple cannot check it" warning. Worth it once enough Mac players are put off by the Terminal step.
 - An itch.io page and the Riftdogs website, with the brand rolled out.
 - The 8-pilot limit lifted; presence and the shared market tested at higher numbers.
 - Invites opened up more widely.
@@ -66,7 +69,7 @@ Versions are targets, not promises. Each phase has a GitHub milestone with the s
 
 **Done when:** Windows players can install, update and play, and the server holds a load test well above the old limit.
 
-## Phase 4 — 0.13 The ledger
+## Phase 4 — The ledger
 
 **Goal:** every credit and every tonne has a traceable history held by the server. The phases after this are built on it.
 
@@ -79,7 +82,7 @@ Versions are targets, not promises. Each phase has a GitHub milestone with the s
 
 **Done when:** every player's books balance exactly, and credits or cargo with no history can't be held.
 
-## Phase 5 — 0.14 Lawless space
+## Phase 5 — Lawless space
 
 **Goal:** a piracy career, player-versus-player combat, and the law that answers it.
 
@@ -97,7 +100,7 @@ Versions are targets, not promises. Each phase has a GitHub milestone with the s
 
 **Done when:** piracy pays but carries real risk, and no loot can be duplicated.
 
-## Phase 6 — 0.15 Credit and crews
+## Phase 6 — Credit and crews
 
 **Goal:** banking, groups, and contracts between players.
 
@@ -112,7 +115,7 @@ Versions are targets, not promises. Each phase has a GitHub milestone with the s
 
 **Done when:** lending stays profitable and stable in the economy simulation and in live play.
 
-## Phase 7 — 0.16 Life on the lanes
+## Phase 7 — Life on the lanes
 
 **Goal:** the galaxy feels inhabited.
 
@@ -129,7 +132,7 @@ Versions are targets, not promises. Each phase has a GitHub milestone with the s
 - **SpaceNet** (parked 2026-11-25, not designed yet): one place in the game to go and look things up. It holds all the manuals and information about the game, and maybe more. Pilots search it for what they need on a mission. It could also carry the Relay's stories (Council decrees, the STA Tally, station news) with their history and what the terms mean, and the used-ship listings, noticeboards and galactic guide above. Today that news only scrolls past on the Relay ticker, and nothing in the game explains its terms.
 - **Ship's radio** (parked 2026-11-25, not designed yet): music in the cockpit without the game streaming anything. The middle screen shows what's playing and offers play/pause and skip, by controlling the pilot's own player (MPRIS on Linux, AppleScript for Music and Spotify on macOS), so YouTube Music in a browser, Spotify and the rest all work and the music stays the pilot's. Optionally, in-game radio stations of royalty-free or commissioned tracks. Not YouTube inside the game: its terms allow only its own embedded web player (at least 200×200, ads and branding intact, no audio-only), which would mean building a web browser into the game, and the middle screen is 178 px high.
 
-## Phase 8 — 1.0 The frontier
+## Phase 8 — The frontier (1.0)
 
 **Goal:** an unlimited galaxy beyond the core.
 
@@ -137,7 +140,7 @@ Versions are targets, not promises. Each phase has a GitHub milestone with the s
 - The economy and the Galactic Council scale to the larger galaxy.
 - The 8 core systems stay free forever. A paid tier for the frontier and later ranks is planned; its terms will be published before it ships.
 
-## Phase 9 — after 1.0: Owners and exchange
+## Phase 9 — Owners and exchange
 
 Ideas, to be designed once the frontier is stable.
 

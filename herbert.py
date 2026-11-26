@@ -79,8 +79,8 @@ LINES = {
         "Gently, now. W, out past 5 km from the station. Then hold H for the jump.",
     ),
     'step_clearance': (
-        "There's the station. Ask nicely: R for clearance. Then Y, and guidance lines you up on the port.",
-        "R for clearance, then Y: guidance leads you to the port. You still work the throttle.",
+        "There's the station. Y for guidance. Inside 2.5 km on the Docking page, R for clearance.",
+        "Y for guidance; you work the throttle. Under 2.5 km on the Docking page, R for clearance.",
     ),
     'step_dock': (
         "Line up: within 14 m across, 6 m up or down, roll within 14 degrees, under 25. Small corrections.",
@@ -195,8 +195,12 @@ LINES = {
         "No course set. 1 opens the chart. Pick somewhere and lock it in, rookie.",
     ),
     'call_course': (
-        "Course is set. Hold H to jump. At the far end, R for clearance.",
-        "You know where you're going. Hold H to jump; near the station, R for clearance.",
+        "Course is set. Hold H to jump. At the far end, Y for guidance, then R inside 2.5 km.",
+        "You know where you're going. Hold H to jump; there, Y for guidance and R once inside 2.5 km.",
+    ),
+    'clearance_now': (
+        "Inside 2.5 km. Ask nicely now: R for clearance. You'll have 120 seconds.",
+        "Close enough. R for clearance, and mind the clock: 120 seconds to get in.",
     ),
 }
 
@@ -205,7 +209,7 @@ FACE_OF = {}
 for _face, _keys in (
         ('smiling', 'call reoffer trip_done goodbye profit'),
         ('speaking', 'call_hint step_buy step_launch step_course step_jump step_clearance step_dock step_sell pick_up '
-                     'nudge reoffer_later call_lost call_course'),
+                     'nudge reoffer_later call_lost call_course clearance_now'),
         ('amused', 'done_buy done_launch done_course done_jump done_clearance done_dock launched_empty came_back '
                    'nothing_to_sell even wave_off decline'),
         ('serious', 'step_buy_broke left_unsold loss call_attack call_fuel call_fuel_docked'),
@@ -214,7 +218,7 @@ for _face, _keys in (
 
 # Keys whose line can be the last of a batch said in flight (the card shows the last line).
 FLIGHT_KEYS = ('call_hint', 'wave_off', 'decline', 'reoffer_later', 'step_course', 'step_jump', 'step_clearance',
-               'step_dock', 'call_attack', 'call_fuel', 'call_lost', 'call_course')
+               'step_dock', 'call_attack', 'call_fuel', 'call_lost', 'call_course', 'clearance_now')
 
 
 # The note he leaves once the licence is issued: one page of his docked panel a line, shown in order.
@@ -455,6 +459,11 @@ class Tutor:
         trip is still the guided one."""
         if self.state['stage'] != 'waiting' or self.state['since_intro'] is None: return []
         return self._call(ctx)
+
+    def clearance_now(self, ctx):
+        """Guiding at the clearance step and inside the approach corridor without clearance: ask now."""
+        if self.state['stage'] != 'guiding' or STEPS[self.state['step']] != 'clearance': return []
+        return [self._say('clearance_now', ctx)]
 
     def reminder(self, ctx):
         """The current step again (after loading a game mid-trip)."""
