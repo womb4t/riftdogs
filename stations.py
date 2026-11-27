@@ -26,7 +26,7 @@ RIM_DEPTH = 14.0        # how deep a ring's rim is, inwards from its radius, for
 SPAR = 4.0              # half the thickness of a spoke or fin, for a laser hit
 
 
-def station_type(government, tech, economy, *, lawless=('Anarchy', 'Feudal')):
+def station_type(government, tech, economy, *, lawless=('Lawless', 'Wartorn')):
     """Lawless government -> frontier; else tech 11 or more -> research; else an industrial economy ->
     industrial; else the orbital hub."""
     if government in lawless: return 'frontier'

@@ -25,7 +25,7 @@ NEW_LINE = .5         # a licensed industry starts at half a typical factory
 RELIEF = (E.FOOD, E.MEDICINE)
 KEEP = 60             # decrees remembered
 TAX_RANGE = (0., .10)
-TAX_START = {'Anarchy': 0., 'Feudal': 0.}   # everyone else starts at DEFAULT_TAX
+TAX_START = {'Lawless': 0., 'Wartorn': 0.}   # everyone else starts at DEFAULT_TAX
 DEFAULT_TAX = .04
 TAX_STEP = .01
 RATE_RANGE = (.005, .15)
@@ -40,7 +40,7 @@ SAFEST = .85          # the share of piracy risk full policing removes
 RISK = .02            # chance a cargo run through unpoliced lawful space is lost
 LAWLESS_RISK = .05    # and through lawless space
 # How safe each kind of government keeps its space (share of POLICE_FULL it funds), whatever the tax.
-SAFETY_TARGET = {'Dictatorship': .9, 'Communist': .85, 'Corporate state': .8, 'Confederacy': .7, 'Democracy': .75}
+SAFETY_TARGET = {'Autocratic': .9, 'Collective': .85, 'Corporation': .8, 'League': .7, 'Self Determined State': .75}
 RESERVE_REVIEWS = 4   # the treasury aims to hold a day of spending
 HOUSE_SHARE = .10     # the house's cut of every tax credit (the house bank)
 # Fiscal rule: one tax rate for every lawful world (struggling worlds get a discount), steered each review

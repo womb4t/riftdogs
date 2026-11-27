@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RIFTDOGS — an original Elite-inspired game. Python 3 + system SDL2/SDL2_ttf.
+"""RIFTDOGS — an original space trading game. Python 3 + system SDL2/SDL2_ttf.
 Run: python3 riftdogs.py   Test: python3 riftdogs.py --self-test
 """
 import argparse
@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 import random
+import struct
 import sys
 import time
 import threading
@@ -36,10 +37,11 @@ import seal
 import save_sync
 import startup
 import stations
+import ships
 import cockpit
 import secrets
 
-VERSION = '0.18.1'
+VERSION = '0.19.0'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
@@ -62,7 +64,16 @@ SUN_RADIUS, SCOOP_ALTITUDE, SCOOP_SPEEDS = 220, 280, (10, 60)
 TRADE_LOG_SIZE = 200
 DOCK_ROLL_TOLERANCE = math.radians(14)
 DOCK_SPEED_LIMIT = 25
-AUTODOCK_CONE = math.radians(20)   # the docking computer flies out to the port's axis first beyond this
+AUTODOCK_CONE = math.radians(20)   # the autopilot flies out to the port's axis first beyond this
+# Beyond AUTOPILOT_HANDOVER of the port the Autopilot flies to the port's approach point (that far out on its axis)
+# at up to AUTOPILOT_CRUISE m/s, slowing to today's 70 m/s cap by the handover; inside, today's approach flies.
+# At 120 m/s and today's 0.65 rad/s yaw the turning circle is about 185 m, well inside the 2.5 km left to the port.
+AUTOPILOT_HANDOVER, AUTOPILOT_CRUISE = 2500, 120
+AUTOPILOT_CLEARANCE_RANGE = 3500   # it radios for clearance from here in, so the 120 s lasts the approach
+CHECK_FLIGHT_MANUAL = 'Examiner Varga: manual flight only during the check flight.'
+AUTOPILOT_HOLD_OFF = 200   # refused near the port, it backs out to here (outside the 150 m no-clearance security zone)
+AUTOPILOT_BACK_OFF_SPEED = 12   # m/s, straight out along the port's axis
+AUTOPILOT_SHIP_CLEARANCE = 150     # metres it keeps from another ship or a rock (a collision is 52 m)
 STATION_NUMBER_RANGE = 3000   # the station's number shows on the hull within this range (m)
 # A dim gold box round the active port, the size 0.13 drew the slot (70 x 24 m), turned with the slot: a visual
 # target within 1.5 km. Docking still needs the true 28 x 12 m slot.
@@ -78,7 +89,8 @@ PANEL_W = cockpit.CONTENT[2]   # the game's screens run the window's width under
 W, H = 1200, 790
 SPACE = (4,9,18)   # the colour of empty space; solid shapes are filled with it
 BOX_W = PANEL_W-46    # a full-width box from x 35, as far in from the content's right edge (x 1165)
-STATUS_PANEL_X = 35+BOX_W-265   # the market's COMMANDER STATUS column, under the top bar's credits block
+STATUS_PANEL_X = 35+BOX_W-265   # the market's SKIPPER STATUS column, under the top bar's credits block
+STATUS_ROW = 32                 # its line spacing: 14 lines and the edited-save notice end above the buttons
 # The Relay's news ticker runs along the bottom of every screen, cockpit included.
 TICKER_Y, TICKER_H = 760, 30
 TICKER_SPEED = 60     # pixels a second
@@ -91,25 +103,77 @@ ILLEGAL = (6, 7)
 # Precious metals: scarce at stations, and found in the occasional rich asteroid.
 METALS = (8, 9)
 TECH = [5, 10, 4, 8, 3, 12, 2, 7]
+# The starting kit. Fuel is kept in units inside the game and in saves; players read it in litres.
+TANK = 8.0                  # a full tank, in units
+LITRES_PER_UNIT = 2500      # so the tank shows as 20,000 L
+POD_COUNT, POD_TONNES, EXTENDED_POD_TONNES = 4, 8, 10   # the hold is four cargo pods; Extended Cargo Pods enlarge them
+BASE_HOLD, EXTENDED_HOLD = POD_COUNT*POD_TONNES, POD_COUNT*EXTENDED_POD_TONNES
+START_MISSILES, MAX_MISSILES = 2, 6
+MAX_MINES = 4
+NUMBER_WORDS = ('zero','one','two','three','four','five','six','seven','eight','nine','ten')
+
+
+def litres(units):
+    """Fuel units as the player reads them: whole litres with thousands separators, e.g. '20,000 L'."""
+    return f'{round(units*LITRES_PER_UNIT):,} L'
+
+
+def kilolitres(units):
+    """Fuel units in thousands of litres to one decimal place, for tight spots: '17.5k', '20k'."""
+    text = f'{units*LITRES_PER_UNIT/1000:.1f}'
+    return (text[:-2] if text.endswith('.0') else text)+'k'
+
+
+def tank_text(fuel):
+    """'17,500 / 20,000 L': fuel aboard of a full tank."""
+    return f'{litres(fuel)[:-2]} / {litres(TANK)}'
+
+
+def tank_short(fuel):
+    """'17.5k / 20k L': tank_text for the cockpit's ship panel and the market's status column."""
+    return f'{kilolitres(fuel)} / {kilolitres(TANK)} L'
+
+
+def fuel_per_kl(price):
+    """A price per fuel unit as credits per 1,000 L, to one decimal: '1.2'."""
+    return f'{price*1000/LITRES_PER_UNIT:.1f}'
+
+
+def fuel_price_text(price):
+    """A price per fuel unit as the player reads it, per 1,000 L to one decimal: '1.2 cr per 1,000 L'."""
+    return f'{fuel_per_kl(price)} cr per 1,000 L'
+
+
+def hold_text(pilot):
+    """'Hold 32 t (4 × 8 t pods)': the hold's size and the pods that make it up."""
+    pod = EXTENDED_POD_TONNES if 'cargo' in pilot.equipment else POD_TONNES
+    return f'Hold {pilot.capacity} t ({POD_COUNT} × {pod} t pods)'
+
+
 # key, label, cost, minimum technology, effect
 EQUIPMENT = [
-    ('missile', 'Homing missile', 30, 1, 'Single-use weapon; maximum four aboard'),
-    ('cargo', 'Large cargo bay', 400, 2, 'Increases capacity from 20 to 35 tonnes'),
-    ('beam', 'Beam laser', 1000, 4, 'Faster combat laser'),
-    ('scoops', 'Fuel / cargo scoops', 525, 5, 'Collect ore fragments and skim the sun'),
-    ('mining', 'Mining laser', 800, 5, 'Break asteroids into collectible ore'),
-    ('docking', 'Docking computer', 1500, 8, 'C engages automatic approach and docking'),
-    ('energy', 'Extra energy unit', 1500, 8, 'Doubles shield regeneration'),
-    ('military', 'Military laser', 6000, 10, 'High damage, rapid fire'),
+    ('missile', 'Autonomous Guidance Missile (AGM)', 45, 2, f'Single-use weapon; maximum {NUMBER_WORDS[MAX_MISSILES]} aboard'),
+    ('cargo', 'Extended Cargo Pods', 450, 2, f'Upgrades the {NUMBER_WORDS[POD_COUNT]} cargo pods from {POD_TONNES} t to {EXTENDED_POD_TONNES} t ({BASE_HOLD} → {EXTENDED_HOLD} t)'),
+    ('beam', 'Energy laser', 1150, 5, 'Faster combat laser'),
+    ('scoops', 'External Collection System (ECS)', 480, 3, 'Collect ore fragments and skim the sun'),
+    ('mining', 'Asteroid Energy Weapon', 700, 4, 'Break asteroids into collectible ore'),
+    ('docking', 'Autopilot', 1250, 7, 'D engages the Autopilot: flies you in from anywhere in a system and docks.'),
+    ('energy', 'Shield generator', 1700, 6, 'Doubles shield regeneration'),
+    ('military', 'High Energy Combat Weapon', 5200, 9, 'High damage, rapid fire'),
     ('mine', 'Proximity mine', 75, 4, 'L lays one; 1.5 second arming delay; keep clear'),
     ('jammer', 'Signal jammer', 600, 3, 'Z disrupts targeting for 8s; 20s cooldown'),
     ('cloak', 'Phase cloak', 3000, 11, 'K toggles concealment; consumes fuel'),
     ('dsc', 'DSC comms console', 450, 3, 'Ctrl+5 comms page, Distress tab: alerts with identity, nature and position; acknowledge to track'),
-    ('rear', 'Rear laser mount', 600, 4, 'Comes with a pulse laser; in rear view (F), V mounts any laser you own'),
+    ('rear', 'Rear laser mount', 600, 4, 'Comes with a burst laser; in rear view (F), V mounts any laser you own'),
     ('lrscan', 'Long-range scanner', 900, 6, 'Ctrl+L or RNG: radar out to 25 km; finds distress calls (DSC names them)'),
 ]
 RESALE = 0.5   # outfitters buy kit back at half its new price
-LAWLESS = ('Anarchy','Feudal')
+LAWLESS = ('Lawless','Wartorn')
+GOVERNMENTS = ('Lawless','Wartorn','Autocratic','Collective','League','Self Determined State','Corporation')
+
+def short_government(name, room):
+    """The government's name, or 'Self-Det. State' when the longest name will not fit in room characters."""
+    return 'Self-Det. State' if len(name) > room else name
 # The Newcomer Charter: new commanders (below Operator rank) earn a bonus on legal sales at these low-tech,
 # well-policed worlds, and Charter patrols turn many pirates away there. It ends at Operator, nudging them on.
 CHARTER_WORLDS = (0, 2, 3)        # Halvora, Meridel, Brennix
@@ -119,15 +183,18 @@ SECURITY_GRACE = 20               # seconds near a station without clearance bef
 CHARTER_ESCORT = .6               # chance a Charter patrol turns a pirate away in Charter space
 # Crymto exchanges, by government: (% fee Crymto -> credits, % fee credits -> Crymto, compliance checks as a
 # share of the world's customs search). Lawless ports launder quietly; lawful ones charge more and check.
-EXCHANGE_TERMS = {'Anarchy':(20,10,0.), 'Feudal':(20,10,0.), 'Dictatorship':(30,10,.25), 'Communist':(30,10,.25),
-                  'Confederacy':(30,10,.25), 'Democracy':(40,10,.5), 'Corporate state':(40,10,.5)}
+EXCHANGE_TERMS = {'Lawless':(20,10,0.), 'Wartorn':(20,10,0.), 'Autocratic':(30,10,.25), 'Collective':(30,10,.25),
+                  'League':(30,10,.25), 'Self Determined State':(40,10,.5), 'Corporation':(40,10,.5)}
 COMPLIANCE_SEIZE = 50    # % of the Crymto being exchanged that a compliance check freezes
 COMPLIANCE_FINE = 10     # % of it added to your fines
+LASER_NAMES = {'pulse': 'Burst laser', 'beam': 'Energy laser', 'military': 'High Energy Combat Weapon', 'mining': 'Asteroid Energy Weapon'}
+# Capitals for the cockpit strip, where the long names would not fit.
+LASER_STRIP = {'pulse': 'BURST LASER', 'beam': 'ENERGY LASER', 'military': 'HE COMBAT WEAPON', 'mining': 'ASTEROID WEAPON'}
 LASERS = {'pulse': (0.30, 1), 'beam': (0.14, 1), 'military': (0.12, 2), 'mining': (0.65, 1)}
 # Full strength of NPC ships; the first half of it is shields, the rest hull.
 ENEMY_STRENGTH = {'pirate': 6, 'police': 10}
 MISSILE_SPEED = 1200
-# Fees a pilot can ask a disabled ship for restarting its drive (one unit of your fuel).
+# Fees a pilot can ask a disabled ship for restarting its drive (one unit, 2,500 L, of your fuel).
 HAIL_ASKS = (50, 120, 250)
 # Ship systems that start failing below these hull levels (%), worse the lower it goes.
 DAMAGE_FAULTS = {'scanner': 60, 'guidance': 50, 'bearing': 45, 'laser': 30}
@@ -236,10 +303,10 @@ SYSTEMS = [
 # Earlier releases used other names; saved waypoints and courses are renamed on load.
 RENAMED_SYSTEMS = {'Lave':'Halvora','Zaonce':'Corvant','Diso':'Meridel','Leesti':'Brennix','Riedquat':'Skarrow','Tionisla':'Velmora','Orerve':'Duskholt','Reorte':'Ambrell'}
 PROFILES = [
-    ('Dictatorship', 4.2, 6400), ('Corporate state', 5.8, 9100),
-    ('Democracy', 3.1, 5800), ('Confederacy', 4.9, 7600),
-    ('Anarchy', 1.2, 11500), ('Democracy', 6.4, 12800),
-    ('Feudal', 0.8, 4200), ('Communist', 3.6, 8100)]
+    ('Autocratic', 4.2, 6400), ('Corporation', 5.8, 9100),
+    ('Self Determined State', 3.1, 5800), ('League', 4.9, 7600),
+    ('Lawless', 1.2, 11500), ('Self Determined State', 6.4, 12800),
+    ('Wartorn', 0.8, 4200), ('Collective', 3.6, 8100)]
 
 SAVE = Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local/share') / 'riftdogs' / 'save.json'
 # Bug reports and suggestions wait here, one file each, until an online session sends them.
@@ -277,8 +344,8 @@ def static_price(system, good):
                   7: {'Industrial': .65, 'Agricultural': 1.65, 'Frontier': 1.60}}
         factor = demand[good][economy]
         government = PROFILES[system][0]
-        if good == 7 and government in ('Anarchy','Feudal'): factor *= 1.10
-        if good == 6 and government == 'Corporate state': factor *= 1.05
+        if good == 7 and government in ('Lawless','Wartorn'): factor *= 1.10
+        if good == 6 and government == 'Corporation': factor *= 1.05
     return BASE[good] * factor * rng.uniform(0.9, 1.1)
 
 
@@ -371,11 +438,11 @@ def report_verdict(bucket, average=None):
         lines.append(f'Your trading makes {m["trade_trip"]:,.0f} cr a trip. Higher value goods such as Computers, Medicine and Machinery earn far more per tonne.')
     avg = (average or {}).get('net_hr')
     if avg is not None and m['net_hr'] is not None:
-        if avg > 0 and m['net_hr'] >= avg*1.1: lines.append(f'You earn {m["net_hr"]:,.0f} cr an hour, {round((m["net_hr"]/avg-1)*100)}% more than the average commander.')
+        if avg > 0 and m['net_hr'] >= avg*1.1: lines.append(f'You earn {m["net_hr"]:,.0f} cr an hour, {round((m["net_hr"]/avg-1)*100)}% more than the average skipper.')
         elif m['net_hr'] < avg*.9:
             mine = f'You earn {m["net_hr"]:,.0f} cr an hour' if m['net_hr'] >= 0 else f'You are losing {-m["net_hr"]:,.0f} cr an hour'
-            lines.append(f'{mine}; the average commander earns {avg:,.0f} cr.')
-        else: lines.append(f'You earn {m["net_hr"]:,.0f} cr an hour, about the same as the average commander.')
+            lines.append(f'{mine}; the average skipper earns {avg:,.0f} cr.')
+        else: lines.append(f'You earn {m["net_hr"]:,.0f} cr an hour, about the same as the average skipper.')
     elif not lines: lines.append(f'Steady: {m["net_hr"]:+,.0f} cr an hour after costs and losses.' if m['net_hr'] is not None else 'Steady progress.')
     return lines[:3]
 
@@ -512,7 +579,7 @@ def galactic_distance(a,b):
     return math.hypot(a[0]-b[0],a[1]-b[1])
 
 
-FUEL_CAPACITY = 7.
+FUEL_CAPACITY = TANK   # the jump range a full tank reaches
 START_CREDITS = 400   # a new pilot's wallet: enough to fill most of the starter hold with mid-priced goods
 # Solar flares black out deep-space comms (remote price feeds, the commander relay) for minutes at a time.
 # The schedule comes from the clock, so every copy of the game sees the same flare at the same moment.
@@ -549,6 +616,7 @@ MAX_TRAFFIC = 4                # trader ships visible at once
 TRADER_DEPART_SECONDS = 22     # a launching trader flies clear this long, then jumps out
 TRADER_INBOUND_SECONDS = 45    # an arriving trader jumps in this long before it docks
 TRADER_SPEED, TRADER_HULL = 70, 6
+STEER_MIN_SPEED = 2.           # m/s: a ship moving slower than this keeps its heading
 
 
 def solar_flare(now=None):
@@ -651,7 +719,7 @@ class Pilot:
         self.station_police_defeated = [0]*len(SYSTEMS)
         self.cargo = [0] * len(GOODS)
         self.system = 0
-        self.fuel = 7.0
+        self.fuel = TANK
         self.hull = 100
         self.kills = 0
         self.name = ''
@@ -659,7 +727,7 @@ class Pilot:
         self.cargo_paid = [0] * len(GOODS)
         self.jumps = 0
         self.equipment = []
-        self.missiles = 3
+        self.missiles = START_MISSILES
         self.laser = 'pulse'
         self.rear_laser = 'pulse'  # laser on the rear mount, when one is fitted
         self.stock = initial_stock()
@@ -715,7 +783,7 @@ class Pilot:
 
     @property
     def capacity(self):
-        return 35 if 'cargo' in self.equipment else 20
+        return EXTENDED_HOLD if 'cargo' in self.equipment else BASE_HOLD
 
     def trade(self, good, buy, clean_deal=False, use_crymto=False, value=None):
         if value is None: value = quote(self.system, good, buy)
@@ -725,7 +793,7 @@ class Pilot:
             if stock[good] <= 0: return 'Station has no stock.'
             if sum(self.cargo) >= self.capacity: return 'Cargo hold full.'
             dirty = min(self.crymto,value) if good in ILLEGAL or self.crymto_accepted else 0
-            if self.credits < value-dirty: return 'Insufficient funds.' if self.crymto_accepted or good in ILLEGAL else 'Insufficient funds (anarchy and feudal ports take Crymto for anything; contraband takes it everywhere).'
+            if self.credits < value-dirty: return 'Insufficient funds.' if self.crymto_accepted or good in ILLEGAL else 'Insufficient funds (Lawless and Wartorn ports take Crymto for anything; contraband takes it everywhere).'
             self.crymto -= dirty
             self.credits -= value-dirty
             if self.cargo[good] == 0: self.cargo_paid[good] = 0
@@ -802,10 +870,10 @@ class Pilot:
 
     def buy_equipment(self, index):
         key, label, cost, tech, _ = EQUIPMENT[index]
-        if TECH[self.system] < tech: return f'Outfitting unavailable: {label} requires tech {tech}; {SYSTEMS[self.system][0]} is tech {TECH[self.system]}.'
+        if TECH[self.system] < tech: return f'Outfitting unavailable: {label} requires yard grade {tech}; {SYSTEMS[self.system][0]} is yard grade {TECH[self.system]}.'
         if key in self.equipment: return 'Already installed.'
-        if key == 'mine' and self.mines >= 4: return 'Mine rack full (4).'
-        if key == 'missile' and self.missiles >= 4: return 'Missile rack full (4).'
+        if key == 'mine' and self.mines >= MAX_MINES: return f'Mine rack full ({MAX_MINES}).'
+        if key == 'missile' and self.missiles >= MAX_MISSILES: return f'Missile rack full ({MAX_MISSILES}).'
         dirty = self.spend(cost,label)
         if dirty is None: return 'Insufficient credits.'
         self.book('equipment',-cost)
@@ -815,12 +883,12 @@ class Pilot:
         if key in LASERS:
             self.laser = key
             if 'rear' in self.equipment: return label+' fitted to the front mount. In rear view (F), V moves it to the rear mount.'
-            return label+' fitted. Pulse laser kept: V switches; a rear mount fits it behind you.'+self.paid_note(dirty)
+            return label+' fitted. Burst laser kept: V switches; a rear mount fits it behind you.'+self.paid_note(dirty)
         return label + ' fitted.'+self.paid_note(dirty)
 
     @property
     def crymto_accepted(self):
-        """Anarchy and feudal ports take Crymto for anything, as good as credits."""
+        """Lawless and Wartorn ports take Crymto for anything, as good as credits."""
         return not self.deep_space and PROFILES[self.system][0] in LAWLESS
 
     def funds(self):
@@ -844,21 +912,21 @@ class Pilot:
         return int(EQUIPMENT[index][2]*RESALE)
 
     def sell_equipment(self, index):
-        """Outfitters buy kit back at half price. The built-in pulse laser is not for sale."""
+        """Outfitters buy kit back at half price. The built-in burst laser is not for sale."""
         key, label, cost, tech, _ = EQUIPMENT[index]
         value = self.resale_value(index)
         if key in ('missile','mine'):
-            if (self.missiles if key == 'missile' else self.mines) <= 0: return f'No {label.lower()}s aboard to sell.'
+            if (self.missiles if key == 'missile' else self.mines) <= 0: return 'No AGMs aboard to sell.' if key == 'missile' else f'No {label.lower()}s aboard to sell.'
             if key == 'missile': self.missiles -= 1
             else: self.mines -= 1
         else:
             if key not in self.equipment: return f'{label} is not fitted.'
-            if key == 'cargo' and sum(self.cargo) > 20: return f'Unload to 20 t or less before removing the large cargo bay ({sum(self.cargo)} t aboard).'
+            if key == 'cargo' and sum(self.cargo) > BASE_HOLD: return f'Unload to {BASE_HOLD} t or less before removing the extended cargo pods ({sum(self.cargo)} t aboard).'
             self.equipment.remove(key)
             if self.laser == key: self.laser = 'pulse'
             if key == 'rear' or self.rear_laser == key: self.rear_laser = 'pulse'
         self.earn(value,'Sold '+label,'equipment')
-        extra = ' Front mount: pulse laser.' if key in LASERS and self.laser == 'pulse' else ''
+        extra = ' Front mount: burst laser.' if key in LASERS and self.laser == 'pulse' else ''
         return f'{label} sold for {value} cr.{extra}'
 
     @property
@@ -866,31 +934,31 @@ class Pilot:
         return 1 + sum(self.cargo) * 0.025
 
     def fuel_cost(self):
-        return math.ceil(round(7 - self.fuel, 3) * fuel_price(self.system))
+        return math.ceil(round(TANK - self.fuel, 3) * fuel_price(self.system))
 
     def sell_fuel(self):
-        # Stations buy fuel back at three quarters of their price, so sun-skimmed fuel can be sold.
-        if self.fuel < 1: return 'Less than one unit of fuel aboard to sell.'
+        # Stations buy fuel back at three quarters of their price, so sun-skimmed fuel can be sold. One unit at a time.
+        if self.fuel < 1: return f'Less than {litres(1)} of fuel aboard to sell.'
         value = fuel_price(self.system)*3//4
         self.fuel = round(self.fuel-1,5)
         self.earn(value,'Fuel sold','running')
-        return f'Sold 1 unit of fuel for {value} cr. Tank {self.fuel:.2f}/7.'
+        return f'Sold {litres(1)} of fuel for {value} cr. Tank {tank_text(self.fuel)}.'
 
     def refuel(self):
         cost = self.fuel_cost()
         if self.funds() >= cost:
             dirty = self.spend(cost,'Fuel')
             self.book('running',-cost)
-            self.fuel = 7.0
-            return f'Fuel purchased: {cost} cr. Tank full.'+self.paid_note(dirty)
+            self.fuel = TANK
+            return f'Fuel purchased: {cost} cr. Tank full ({litres(TANK)}).'+self.paid_note(dirty)
         # A short wallet still buys whole units, so a broke pilot can always limp to the next job.
         price = fuel_price(self.system)
-        units = min(int(7-self.fuel),int(self.funds())//price)
-        if units <= 0: return f'Fuel costs {price} cr per unit here. Sell cargo or take a station job.'
+        units = min(int(TANK-self.fuel),int(self.funds())//price)
+        if units <= 0: return f'Fuel costs {fuel_price_text(price)} here, sold by the {litres(1)}. Sell cargo or take a station job.'
         self.spend(units*price,'Fuel')
         self.book('running',-units*price)
         self.fuel = round(self.fuel+units,5)
-        return f'Bought {units} fuel unit{"s" if units > 1 else ""} for {units*price} cr (all you can afford). Tank {self.fuel:.2f}/7.'
+        return f'Bought {litres(units)} of fuel for {units*price} cr (all you can afford). Tank {tank_text(self.fuel)}.'
 
     def departure_wear(self):
         return 1+sum(self.cargo)*.025
@@ -1022,7 +1090,7 @@ class Pilot:
             if not isinstance(paid,list) or len(paid) != len(GOODS) or not all(integer(n) for n in paid): raise ValueError('stored cargo basis')
         if self.maintenance > 100 or not integer(self.flights_since_service): raise ValueError('maintenance')
         if not integer(self.engineering_level) or self.engineering_level > 5 or not integer(self.engineering_failures) or self.engineering_failures > 20: raise ValueError('engineering')
-        if not integer(self.mines) or self.mines > 4 or not integer(self.fine): raise ValueError('mines/fine')
+        if not integer(self.mines) or self.mines > MAX_MINES or not integer(self.fine): raise ValueError('mines/fine')
         if type(self.deep_space) is not bool: raise ValueError('location')
         if not valid_coordinates(self.position): raise ValueError('position')
         if self.waypoint is not None:
@@ -1030,11 +1098,11 @@ class Pilot:
             if not isinstance(w,dict) or not valid_coordinates(w.get('position')): raise ValueError('waypoint')
             if type(w.get('name')) is not str or len(w['name']) > 60: raise ValueError('name')
             if w.get('system') is not None and (not integer(w['system']) or w['system'] >= 8): raise ValueError('system')
-        if not integer(self.missiles) or self.missiles > 4 or not integer(self.kills): raise ValueError('missiles/kills')
+        if not integer(self.missiles) or self.missiles > MAX_MISSILES or not integer(self.kills): raise ValueError('missiles/kills')
         for key in ('credits', 'fuel', 'hull'):
             n = getattr(self, key)
             if type(n) not in (int, float) or not math.isfinite(n) or n < 0: raise ValueError(key)
-        if self.fuel > 7 or self.hull > 100: raise ValueError('ship')
+        if self.fuel > TANK or self.hull > 100: raise ValueError('ship')
         if self.laser not in LASERS or (self.laser != 'pulse' and self.laser not in self.equipment): raise ValueError('laser')
         if self.rear_laser not in LASERS or (self.rear_laser != 'pulse' and self.rear_laser not in self.equipment): raise ValueError('rear laser')
         if not isinstance(self.stock, list) or len(self.stock) != 8: raise ValueError('stock')
@@ -1064,6 +1132,10 @@ class SDL_Vertex(C.Structure):
     _fields_ = [('position',C.c_float*2),('color',C.c_uint8*4),('tex_coord',C.c_float*2)]
 
 
+_VERTEX = struct.Struct('ff4s8x')   # an SDL_Vertex's bytes, as ctypes lays it out
+assert _VERTEX.size == C.sizeof(SDL_Vertex)
+
+
 class Display:
     def __init__(self):
         self.sdl = C.CDLL(find_sdl_library('SDL2'))
@@ -1073,7 +1145,11 @@ class Display:
         self.quit = bind(self.sdl, 'SDL_Quit', None, [])
         self.window = bind(self.sdl, 'SDL_CreateWindow', ptr, [C.c_char_p, i, i, i, i, C.c_uint32])
         self.renderer = bind(self.sdl, 'SDL_CreateRenderer', ptr, [ptr, i, C.c_uint32])
-        self.color = bind(self.sdl, 'SDL_SetRenderDrawColor', i, [ptr, C.c_uint8, C.c_uint8, C.c_uint8, C.c_uint8])
+        set_colour = bind(self.sdl, 'SDL_SetRenderDrawColor', i, [ptr, C.c_uint8, C.c_uint8, C.c_uint8, C.c_uint8])
+        def color(*args):   # anyone setting the draw colour: line no longer knows what it is
+            self.ink = None
+            return set_colour(*args)
+        self.color, self.ink = color, None
         self.clear = bind(self.sdl, 'SDL_RenderClear', i, [ptr])
         self.present = bind(self.sdl, 'SDL_RenderPresent', None, [ptr])
         self.drawline = bind(self.sdl, 'SDL_RenderDrawLine', i, [ptr, i, i, i, i])
@@ -1103,6 +1179,19 @@ class Display:
         self.is_fullscreen = False
         if not self.win or not self.r:
             raise RuntimeError('Could not create game window.')
+        # A frame of wireframe ships draws over a thousand lines, so this Display's line is a closure making line's
+        # two SDL calls without argtypes (ctypes passes plain ints fastest that way, the renderer as a ready-made
+        # pointer), and skipping the colour when it is still the last line's. A Display made without __init__, as
+        # in the tests, keeps the plain method.
+        renderer = C.c_void_p(self.r)
+        raw_colour,raw_line = self.sdl['SDL_SetRenderDrawColor'],self.sdl['SDL_RenderDrawLine']
+        def line(x1, y1, x2, y2, color=(68, 227, 182)):
+            if color != self.ink:
+                raw_colour(renderer, *color, 255)
+                self.ink = color if type(color) is tuple else None   # a list could change under us
+            raw_line(renderer, int(x1), int(y1), int(x2), int(y2))
+        self.line = line
+        if self.geometry: self.fast_geometry = renderer,self.sdl['SDL_RenderGeometry']   # polygon's, likewise
         fonts = ['/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf', '/usr/share/fonts/TTF/DejaVuSansMono.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
                  '/System/Library/Fonts/Menlo.ttc', '/System/Library/Fonts/Monaco.ttf', '/Library/Fonts/Andale Mono.ttf', '/System/Library/Fonts/Supplemental/Andale Mono.ttf']
         fontpath = next((p for p in fonts if Path(p).exists()), None)
@@ -1150,13 +1239,14 @@ class Display:
         star-shaped round it), else from the first point (convex)."""
         n = len(points)
         if self.geometry:
-            if centre is not None: triangles = [(centre,points[i],points[(i+1)%n]) for i in range(n)]
-            else: triangles = [(points[0],points[i],points[i+1]) for i in range(1,n-1)]
-            vertices = (SDL_Vertex*(3*len(triangles)))()
-            for k,(x,y) in enumerate(v for t in triangles for v in t):
-                vertices[k].position[:] = (x,y)
-                vertices[k].color[:] = (*color,255)
-            self.geometry(self.r,None,vertices,len(vertices),None,0)
+            if centre is not None: corners = [v for i in range(n) for v in (centre,points[i],points[(i+1)%n])]
+            else: corners = [v for i in range(1,n-1) for v in (points[0],points[i],points[i+1])]
+            # SDL_Vertex records packed in one go: position, the colour's bytes, tex_coord left zero.
+            rgba,pack = bytes((*color,255)),_VERTEX.pack
+            vertices = (SDL_Vertex*len(corners)).from_buffer_copy(b''.join([pack(x,y,rgba) for x,y in corners]))
+            fast = self.__dict__.get('fast_geometry')
+            if fast is None: self.geometry(self.r,None,vertices,len(corners),None,0)
+            else: fast[1](fast[0],None,vertices,len(corners),None,0)
             return
         # No SDL_RenderGeometry: even-odd rows through the outline's edges.
         top = max(0,math.ceil(min(y for _,y in points)-.5))
@@ -1352,6 +1442,10 @@ class Game:
         self.station_axis = [0., 0., 1.]  # unit vector from port A towards port B, camera-relative
         self.roll = self.station_angle = 0.
         self.autodock = False
+        self.autopilot_armed = False    # on when a jump began: it takes over on arrival
+        self.autopilot_said = None      # 'refused' or 'arrest' once it has said why it holds short of the station
+        self.autopilot_consent = False  # you radioed (R) knowing docking means arrest: it may take you in
+        self.autopilot_request_in = 0.  # seconds before it radios for clearance again
         self.station_hostilities = [False]*len(SYSTEMS)
         self.station_hostile_until = [0.]*len(SYSTEMS)
         self.security_elapsed = 0.
@@ -1368,7 +1462,7 @@ class Game:
         self.course_assist = self.guidance_fresh = False
         self.clearance_nudged = False
         self.fine_control = False
-        self.enemy = None
+        self.enemy = self.enemy_model = self.enemy_facing = self.enemy_up = None
         self.ship_target = None
         self.asteroids = []
         self.fragments = []
@@ -1397,7 +1491,7 @@ class Game:
         self.alarm = self.alarm_silenced = None
         self.alarm_sound = load_prefs()['alarm_sound']   # this computer's setting, not the save's
         self.enemy_shot = None
-        self.message = 'Welcome back, Commander.' if loaded else 'Welcome, Commander. 9 manual; U ship outfitting.'
+        self.message = 'Welcome back, Skipper.' if loaded else 'Welcome, Skipper. 9 manual; U ship outfitting.'
         if loaded and self.p.edited: self.message = EDITED_NOTICE
         self.view_labels = []
         self.stars = [[random.uniform(-1000,1000),random.uniform(-650,650),random.uniform(-1800,1800)] for _ in range(180)]
@@ -1514,12 +1608,15 @@ class Game:
         self.cruise = None
         self.jump_charge = self.jump_warp = self.arrival = None
         self.speed = 30
-        self.enemy = None
+        self.enemy = self.enemy_model = self.enemy_facing = self.enemy_up = None
         self.ship_target = None
         self.npc_mine_timer = 25.
         self.spawn = 18
         self.roll = self.station_angle = 0.
         self.autodock = False
+        if departure: self.autopilot_armed = False
+        self.autopilot_said = None
+        self.autopilot_consent = False
         self.course_assist = self.guidance_fresh = False
         self.clearance_nudged = False   # Herbert's "R now" inside the corridor, once a flight
         self.nav_target = None
@@ -1571,7 +1668,7 @@ class Game:
         if getattr(self,'_restoring',False): return
         # While the inbox is being settled the local save stays as uploaded: a crash then takes the server's copy.
         if getattr(self,'inbox_job',None) is not None: return
-        fields = ('world_basis','world_epoch','shield','speed','station','station_axis','roll','station_angle','station_hostilities','station_hostile_until','security_elapsed','security_warning','security_dispatch','minor_offence','station_laser_warning','station_laser_timer','enemy_police_system','surrendering','autodock','course_assist','fine_control','enemy','enemy_kind',
+        fields = ('world_basis','world_epoch','shield','speed','station','station_axis','roll','station_angle','station_hostilities','station_hostile_until','security_elapsed','security_warning','security_dispatch','minor_offence','station_laser_warning','station_laser_timer','enemy_police_system','surrendering','autodock','autopilot_armed','course_assist','fine_control','enemy','enemy_kind',
                   'asteroids','fragments','sun','heat','nav','rear_view','planet','planet_radius',
                   'assist_speed','mine_objects','jamming','jammer_cooldown','cloaked','customs_checked',
                   'cruise','jump_warp','npc_mine_timer','spawn','cooldown','enemy_shot','broken_down','breakdown_in',
@@ -1579,6 +1676,8 @@ class Game:
         state = {key:getattr(self,key) for key in fields}
         if state['nav'] == 'object': state['nav'] = 'station'
         if isinstance(state['disabled_ship'],dict) and state['disabled_ship'].get('check'): state['disabled_ship'] = None   # Varga's staged ship stays out of the save
+        if isinstance(state['disabled_ship'],dict):   # its hull and heading are not saved: a restored ship is dressed afresh
+            state['disabled_ship'] = {k:v for k,v in state['disabled_ship'].items() if k not in ('model','facing','up')}
         data = dict(vars(self.p))
         data['_session'] = dict(schema=1,commander=self.p.commander_id,saved_at=time.time(),mode=self.session_mode(),state=state)
         try:
@@ -1637,6 +1736,10 @@ class Game:
             allowed = set(vars(self)) - {'d','p','keys','buttons','updates','running','_message','alert','_restoring'}
             for key,value in state.items():
                 if key in allowed: setattr(self,key,value)
+            # Hulls and headings are never saved: a restored enemy or disabled ship gets them afresh.
+            if self.enemy is not None: self.dress_enemy()
+            else: self.enemy_model = self.enemy_facing = self.enemy_up = None
+            if isinstance(self.disabled_ship,dict): self.dress_disabled(self.disabled_ship)
             axis = state.get('station_axis')
             # A session from before 0.14 (or a damaged axis) gets the facing axis: port A towards you.
             if type(axis) is not list or len(axis) != 3 or any(type(v) not in (int,float) for v in axis) or abs(sum(v*v for v in axis)-1) > .001:
@@ -1644,6 +1747,10 @@ class Game:
             self.mode = 'dead' if self.p.hull <= 0 else mode
             self.ship_target = None
             self.jump_charge = None
+            # A charge doesn't survive a resume, so the Autopilot armed for it is off (the catch-up must not fly an
+            # approach while you're away). Mid-hyperspace it stays armed and takes over on arrival.
+            jump_cancelled = self.autopilot_armed and mode != 'hyperspace'
+            if jump_cancelled: self.autodock = self.autopilot_armed = False
             self.keys.clear()
             self._restoring = True
             elapsed = max(0,time.time()-float(session['saved_at']))
@@ -1666,6 +1773,7 @@ class Game:
                     self.message = 'Prolonged unattended drift: emergency salvage recovery applied.'
             elif self.mode == 'dead': self.message = 'Your ship was destroyed while unattended. Bank and stored cargo remain.'
             elif elapsed >= 1 and mode != 'market': self.message = f'Rejoined your ship after {int(elapsed)} unattended seconds.'
+            if jump_cancelled: self.message = (self.message+' ' if self.message else '')+'Autopilot off: jump cancelled.'
             self._restoring = False
             self.checkpoint()
         except FileNotFoundError: pass
@@ -1737,7 +1845,7 @@ class Game:
         if flare != self.flare_active:
             self.flare_active = flare
             if self.mode != 'intro':
-                self.message = ('SOLAR FLARE: deep-space comms blacked out. Remote prices and the commander relay are down.' if flare
+                self.message = ('SOLAR FLARE: deep-space comms blacked out. Remote prices and the skipper relay are down.' if flare
                                 else 'Solar flare over. Deep-space comms restored.')
         self.update_job(dt)
         if self.enemy_shot:
@@ -1789,7 +1897,7 @@ class Game:
         # Trades not yet sent belong to the branch just discarded: the server must never book them.
         if getattr(self,'market_client',None): self.market_client.discard_queued()
         self.mode = 'market'
-        self.enemy = self.rescue = self.hail = self.disabled_ship = None
+        self.enemy = self.enemy_model = self.enemy_facing = self.enemy_up = self.rescue = self.hail = self.disabled_ship = None
         self.cruise = self.jump_warp = self.arrival = self.jump_charge = None
         self.settle_loaded_save()
         if message is None: message = getattr(getattr(self,'remote_save',None),'rejected_message',None)
@@ -1811,8 +1919,13 @@ class Game:
         if self.p.deep_space and status == 'flight': status = 'deep-space'
         position = [-sum(axis[j]*self.station[j] for j in range(3)) for axis in self.world_basis]
         velocity = [axis[2]*self.speed for axis in self.world_basis]
+        # Your nose and screen-up, in the world frame. Screen-up in camera space is the point project() puts straight
+        # above the view centre at this roll: (sin roll, -cos roll, 0) (y runs down the screen).
+        up = (math.sin(self.roll),-math.cos(self.roll),0.)
+        facing = unit_vector([axis[2] for axis in self.world_basis])
+        up = unit_vector([sum(axis[j]*up[j] for j in range(3)) for axis in self.world_basis])
         return dict(system=self.p.system,mode=status,position=position if status == 'flight' else [0.,0.,0.],
-                    velocity=velocity if status == 'flight' else [0.,0.,0.],epoch=self.world_epoch)
+                    velocity=velocity if status == 'flight' else [0.,0.,0.],epoch=self.world_epoch,facing=facing,up=up)
 
     @property
     def tutor(self):
@@ -2145,6 +2258,7 @@ class Game:
             else: self.varga_say('wait',minutes=max(1,math.ceil((licence.RETAKE_SECONDS-(now-rec['last_attempt']))/60)))
             return
         rec['last_attempt'] = now
+        self.autodock = self.autopilot_armed = False   # manual flight only during her test
         self.check_flight = dict(part='launch',started=now,part_started=0.,marks={},beacon=None,
                                  clock=0.,system=self.p.system,launched=None,radioed=None,jumped=False,acked=None,
                                  said=[],varga_at=0.,varga_card=None,aside=False,asides=random.sample(examiner.HERBERT_ASIDES,len(examiner.HERBERT_ASIDES)))
@@ -2183,6 +2297,9 @@ class Game:
         if (self.mode in ('dead','hyperspace') or self.p.hull <= 0 or self.p.deep_space or self.p.system != cf['system']):
             return self.end_check_flight('aborted')
         self.assist_spawn_timer = 1e9   # no other distress call while she is examining
+        if self.autodock or self.autopilot_armed:   # manual flight only: an Autopilot armed through a jump goes off
+            self.autodock = self.autopilot_armed = False
+            self.message = CHECK_FLIGHT_MANUAL
         flying = self.session_mode() in ('flight','cruise')
         part,elapsed = cf['part'],now-cf['part_started']
         if part == 'launch':
@@ -2767,8 +2884,32 @@ class Game:
                 if type(player.get('position')) is not list or len(player['position']) != 3: continue
                 obj = self.other_players.get(player['id'],{}).get('object',[0.,0.,0.])
                 obj[:] = [self.station[j]+sum(player['position'][axis]*self.world_basis[axis][j] for axis in range(3)) for j in range(3)]
-                nearby[player['id']] = dict(id=player['id'],name=player['name'],number=player.get('number'),object=obj)
+                last = self.other_players.get(player['id'],{})
+                facing,up = self.pilot_heading(player,last.get('world_facing'),last.get('world_up'))
+                camera = lambda v: [sum(v[axis]*self.world_basis[axis][j] for axis in range(3)) for j in range(3)]
+                nearby[player['id']] = dict(id=player['id'],name=player['name'],number=player.get('number'),object=obj,
+                                            world_facing=facing,world_up=up,facing=camera(facing),up=camera(up))
         self.other_players = nearby
+
+    @staticmethod
+    def pilot_heading(player, last_facing=None, last_up=None):
+        """An online pilot's (facing, up) in the world frame, as unit vectors. Facing: the one sent, else along its
+        velocity if it moves faster than 1 m/s, else the last known, else world x. Up: the one sent, else the last
+        known, else upright (world -y: screen-up before you have turned), made perpendicular to the facing. A
+        malformed vector (from any server) counts as not sent."""
+        def direction(v):
+            if type(v) is not list or len(v) != 3 or any(type(c) not in (int,float) or not math.isfinite(c) for c in v): return None
+            length = math.sqrt(sum(c*c for c in v))
+            return [c/length for c in v] if .9 <= length <= 1.1 else None
+        facing = direction(player.get('facing'))
+        if facing is None:
+            velocity = player.get('velocity')
+            if type(velocity) is list and len(velocity) == 3 and all(type(c) in (int,float) and math.isfinite(c) for c in velocity):
+                speed = math.sqrt(sum(c*c for c in velocity))
+                if 1 < speed < math.inf: facing = [c/speed for c in velocity]
+        facing = facing or last_facing or [1.,0.,0.]
+        _,up,facing = ships.basis(facing,direction(player.get('up')) or last_up or [0.,-1.,0.])
+        return list(facing),list(up)
 
     def player_label(self, obj):
         return next(('PLAYER '+self.player_tag(p) for p in self.other_players.values() if p['object'] is obj),None)
@@ -2808,10 +2949,10 @@ class Game:
         threading.Thread(target=run,name='lookup',daemon=True).start()
         return entry
 
-    def history_lines(self, number, rows, name=None):
+    def history_lines(self, number, rows, name=None, cols=None):
         """[(text, colour)] for a pilot's former names, at most `rows` lines: FORMERLY, each name with its dates
         (newest first), then +N more. Empty while the lookup is on its way or when there are none. `name`: as
-        pilot_history."""
+        pilot_history. `cols`: the characters a line may hold; a long name gives way (with '...') so both dates stay."""
         entry = self.pilot_history(number,name)
         if entry is None or entry['state'] == 'wait': return []
         if entry['state'] == 'fail': return [('History not available.',DIM)]
@@ -2820,7 +2961,11 @@ class Game:
         if not former or rows < 2: return []
         room = rows-1
         shown = former if len(former) <= room else former[:room-1]
-        lines = [('FORMERLY',GOLD)]+[(f'{n}  {licence.sta_date(a)} – {licence.sta_date(b)}',GREEN) for n,a,b in shown]
+        def line(n,a,b):
+            dates = f'  {licence.sta_date(a)} – {licence.sta_date(b)}'
+            if cols is not None and len(n)+len(dates) > cols: n = n[:max(1,cols-len(dates)-3)]+'...'
+            return (n+dates,GREEN)
+        lines = [('FORMERLY',GOLD)]+[line(n,a,b) for n,a,b in shown]
         if len(shown) < len(former): lines.append((f'+{len(former)-len(shown)} more',DIM))
         return lines
 
@@ -2972,7 +3117,7 @@ class Game:
         self.p.equipment = []
         self.p.laser = 'pulse'
         self.p.missiles = self.p.mines = 0
-        self.p.fuel,self.p.hull,self.p.maintenance,self.p.flights_since_service = 7.,100,0.,0
+        self.p.fuel,self.p.hull,self.p.maintenance,self.p.flights_since_service = TANK,100,0.,0
         destination = min((i for i in range(8) if self.station_allows(i)),key=lambda i:galactic_distance(self.p.position,coordinates(i)))
         self.arrive(coordinates(destination),destination)
         self.dock_clearance = 120
@@ -3006,7 +3151,7 @@ class Game:
         distance = galactic_distance(self.p.position,w['position']) if w else 0
         required = self.jump_fuel_to(w)+(LOCAL_TRIP_METRES*THRUST_FUEL_PER_METRE*self.p.mass_factor if distance > .001 else 0) if w else 0
         if self.p.fuel < 1 or required > self.p.fuel:
-            warnings.append(f'Insufficient fuel reserve: aboard {self.p.fuel:.2f}; planned trip {required:.2f}.')
+            warnings.append(f'Insufficient fuel reserve: aboard {litres(self.p.fuel)}; planned trip {litres(required)}.')
         if w:
             system = w['system']
             if system is None: warnings.append('Destination is deep space: no station, landing or services.')
@@ -3022,7 +3167,7 @@ class Game:
 
     def request_launch(self):
         self.herbert_ring()
-        if self.p.fine and PROFILES[self.p.system][0] not in ('Anarchy','Feudal'):
+        if self.p.fine and PROFILES[self.p.system][0] not in ('Lawless','Wartorn'):
             self.message = f'STATION CONTROL: launch clearance withheld until your {self.p.fine} cr fine is paid: 3 Money, then F Pay fines.'; self.radio('STATION CONTROL','safety')
             return
         if self.launch_warnings():
@@ -3096,7 +3241,7 @@ class Game:
         cargo_cost = sum(self.p.remove_cargo(good,fee_n) for good,fee_n in enumerate(fee['cargo']))
         self.p.book('rescue',-(fee['credits']+cargo_cost))
         self.arrive(coordinates(contract['destination']),contract['destination'])
-        self.p.fuel = 7.
+        self.p.fuel = TANK
         self.p.hull = max(25,self.p.hull)
         self.dock_clearance = 120
         self.dock()
@@ -3151,7 +3296,7 @@ class Game:
                 self.station_hostilities[system] = False
                 self.station_hostile_until[system] = 0.
                 if system == self.p.system and self.enemy_kind == 'police' and self.enemy_police_system == system:
-                    self.enemy,self.ship_target,self.enemy_police_system = None,None,None
+                    self.enemy = self.enemy_model = self.enemy_facing = self.enemy_up = self.ship_target = self.enemy_police_system = None
                 self.message = SYSTEMS[system][0]+': station hostility has cooled. Outstanding fines still apply.'
 
     def hostility_label(self, system):
@@ -3270,7 +3415,7 @@ class Game:
             self.poll_registry()
 
     # ---------- the STA registry (VMS, then N): docked and online, a rename is 500 cr cash, once a week ----------
-    REGISTRY_OFFLINE = 'Names are registered online. Offline, use Menu, then Commander name.'
+    REGISTRY_OFFLINE = 'Names are registered online. Offline, use Menu, then Skipper name.'
     REGISTRY_DOCK = 'Dock at a station to register a name.'
 
     def registry_online(self):
@@ -3425,13 +3570,13 @@ class Game:
     def station_allows(self, system=None):
         self.refresh_station_hostility()
         system = self.p.system if system is None else system
-        return self.station_overwhelmed(system) or not self.station_hostilities[system] and (self.p.fine < 100 or PROFILES[system][0] in ('Anarchy','Feudal'))
+        return self.station_overwhelmed(system) or not self.station_hostilities[system] and (self.p.fine < 100 or PROFILES[system][0] in ('Lawless','Wartorn'))
 
     def arrest_pending(self, system=None):
         # Lawful stations let a wanted pilot dock, but only to surrender.
         system = self.p.system if system is None else system
         self.refresh_station_hostility()
-        return PROFILES[system][0] not in ('Anarchy','Feudal') and (self.station_hostilities[system] or self.p.fine >= 100)
+        return PROFILES[system][0] not in ('Lawless','Wartorn') and (self.station_hostilities[system] or self.p.fine >= 100)
 
     def docking_permitted(self, system=None):
         return self.station_allows(system) or self.arrest_pending(system)
@@ -3458,7 +3603,7 @@ class Game:
         self.station_hostile_until[system] = 0.
         self.p.station_police_remaining[system] = STATION_POLICE_CAPACITY
         self.p.station_police_defeated[system] = 0
-        self.enemy = self.ship_target = self.enemy_police_system = None
+        self.enemy = self.enemy_model = self.enemy_facing = self.enemy_up = self.ship_target = self.enemy_police_system = None
         self.surrendering = False
         settled = f'{paid+from_bank} cr fines collected'+(f', {unpaid} cr unpaid' if unpaid else '')+(f', {seized}t contraband seized' if seized else '')
         if not days:
@@ -3579,7 +3724,7 @@ class Game:
         if self.enemy_kind == 'police' and self.enemy is not None:
             if self.enemy_police_system is not None:
                 self.p.station_police_remaining[self.enemy_police_system] = min(STATION_POLICE_CAPACITY,self.p.station_police_remaining[self.enemy_police_system]+1)
-            self.enemy = self.ship_target = self.enemy_police_system = None
+            self.enemy = self.enemy_model = self.enemy_facing = self.enemy_up = self.ship_target = self.enemy_police_system = None
         self.station_hostilities[system] = False
         self.station_hostile_until[system] = 0.
         self.minor_offence = None
@@ -3597,7 +3742,7 @@ class Game:
             if self.enemy_police_system is not None:
                 system = self.enemy_police_system
                 self.p.station_police_remaining[system] = min(STATION_POLICE_CAPACITY,self.p.station_police_remaining[system]+1)
-            self.enemy = self.ship_target = self.enemy_police_system = None
+            self.enemy = self.enemy_model = self.enemy_facing = self.enemy_up = self.ship_target = self.enemy_police_system = None
         self.station_laser_warning,self.station_laser_timer = False,15.
         self.dock_clearance,self.docking_pending = 120,0
         self.message = 'SURRENDER ACCEPTED: police stand down. Fly straight in and dock to be arrested. Firing or leaving cancels it.'; self.radio('POLICE','safety')
@@ -3635,7 +3780,7 @@ class Game:
         return max(offers) if offers else None
 
     def in_patrol_zone(self):
-        if self.p.deep_space or PROFILES[self.p.system][0] in ('Anarchy','Feudal') or self.station_hostilities[self.p.system]: return False
+        if self.p.deep_space or PROFILES[self.p.system][0] in ('Lawless','Wartorn') or self.station_hostilities[self.p.system]: return False
         return math.sqrt(sum(v*v for v in self.station)) <= PATROL_RADIUS
 
     def station_struck(self):
@@ -3663,6 +3808,7 @@ class Game:
         self.enemy_kind = 'police'
         self.enemy_police_system = self.p.system
         self.enemy = [self.station[0]+90,self.station[1]+50,max(300.,self.station[2]-150),10,0.]
+        self.dress_enemy()
         self.security_dispatch = 15.
         remaining = self.p.station_police_remaining[self.p.system]
         self.message = f'STATION POLICE launched. Station reserve: {remaining}/{STATION_POLICE_CAPACITY}.'; self.radio('STATION CONTROL','safety',f'Police launched. Station reserve: {remaining}/{STATION_POLICE_CAPACITY}.')
@@ -3840,7 +3986,7 @@ class Game:
     def customs_chance(self, system):
         """Customs search: 55% at a fully policed lawful world, less where the Council funds fewer police; none at lawless ones."""
         import council
-        if PROFILES[system][0] in ('Anarchy','Feudal'): return 0.
+        if PROFILES[system][0] in ('Lawless','Wartorn'): return 0.
         if not VIEW or not VIEW.get('safety'): return council.CUSTOMS_SEARCH
         return council.CUSTOMS_SEARCH*VIEW['safety'][system]/council.SAFEST
 
@@ -3853,7 +3999,7 @@ class Game:
 
     def inspect_cargo(self):
         self.customs_checked = True
-        if PROFILES[self.p.system][0] in ('Anarchy','Feudal'): return ''
+        if PROFILES[self.p.system][0] in ('Lawless','Wartorn'): return ''
         count = sum(self.p.cargo[i] for i in ILLEGAL)
         if count and random.random() < self.customs_chance(self.p.system):
             self.report_contraband(lost=True)
@@ -4075,13 +4221,13 @@ class Game:
         self.message = f'Captain: "{ask} is robbery. We can pay {h["counter"]} credits." (4 accepts)'
 
     def hail_settle(self, fee):
-        if self.p.fuel < 1: self.message = 'You need at least 1 unit of fuel to restart their drive.'; return
+        if self.p.fuel < 1: self.message = f'You need at least {litres(1)} of fuel to restart their drive.'; return
         self.p.fuel = round(self.p.fuel-1,5)
         self.p.earn(fee,'Drive restart','jobs')
-        self.end_hail(f'Drive restarted with 1 unit of your fuel. The crew paid {fee} credits and jumped clear.')
+        self.end_hail(f'Drive restarted with {litres(1)} of your fuel. The crew paid {fee} credits and jumped clear.')
 
     def hail_cargo(self):
-        if self.p.fuel < 1: self.message = 'You need at least 1 unit of fuel to restart their drive.'; return
+        if self.p.fuel < 1: self.message = f'You need at least {litres(1)} of fuel to restart their drive.'; return
         space = self.p.capacity-sum(self.p.cargo)
         if space <= 0: self.message = 'Your hold is full, so they cannot pay in cargo.'; return
         good = random.choice((0,1,3,4,5))
@@ -4102,7 +4248,7 @@ class Game:
         d,h = self.d,self.hail
         d.text(35,85,'COMMS / DISABLED SHIP',GOLD)
         d.text(45,140,'Captain: "Our drive is dead and we are a sitting target out here.')
-        d.text(45,168,'Can you restart us? It takes one unit of your fuel. Name your price."')
+        d.text(45,168,f'Can you restart us? It takes {litres(1)} of your fuel. Name your price."')
         for i,ask in enumerate(HAIL_ASKS): d.text(45,230+i*36,f'{"ABC"[i]}  Ask {ask} credits')
         d.text(45,338,f'Y  Accept their offer of {h["counter"]} credits' if h['counter'] else 'Y  (no counter-offer yet)',GREEN if h['counter'] else (120,140,150))
         d.text(45,374,'P  Ask to be paid in cargo instead')
@@ -4161,6 +4307,34 @@ class Game:
         self.radio('DISABLED SHIP','urgency','Cease fire! You hit us, we are a stranded vessel.')
         self.alert = dict(text=self.message,remaining=5.,elapsed=0.)
 
+    @staticmethod
+    def new_heading(facing):
+        """A new ship's facing and up: upright (camera -y, screen-up) made perpendicular. Plain lists, so
+        turn_world can rotate them in place; they are directions, so move_world never touches them."""
+        _,ey,ez = ships.basis(facing,(0.,-1.,0.))
+        return list(ez),list(ey)
+
+    @staticmethod
+    def steer_facing(facing, up, step, dt):
+        """A ship faces the way it moved this frame (`step` metres in `dt` s). Slower than STEER_MIN_SPEED it holds its
+        heading: a speed, not a distance, so it is the same at any frame rate."""
+        if dt <= 0 or not all(math.isfinite(v) for v in step): return
+        if math.sqrt(sum(v*v for v in step)) <= STEER_MIN_SPEED*dt: return
+        _,ey,ez = ships.basis(step,up)
+        facing[:],up[:] = ez,ey
+
+    def dress_enemy(self):
+        """The new enemy's hull and heading: police fly the Harrier, pirates anything. It spawns facing the way you face."""
+        self.enemy_model = ships.POLICE if self.enemy_kind == 'police' else ships.pirate_model()
+        self.enemy_facing,self.enemy_up = self.new_heading((0.,0.,1.))
+
+    def dress_disabled(self, ship):
+        """A disabled ship's hull (never a police Harrier, fixed by its id so a resume shows the same hull) and a random
+        horizontal heading; it never steers."""
+        angle = random.uniform(0,2*math.pi)
+        ship['model'] = ships.disabled_model(random.Random(str(ship.get('ident','')))) if ship.get('ident') else ships.disabled_model()
+        ship['facing'],ship['up'] = self.new_heading((math.sin(angle),0.,math.cos(angle)))
+
     def distress_delay(self):
         """Seconds until a ship in this system calls for help; most flights have none."""
         return random.uniform(*DISTRESS_DELAY) if random.random() < DISTRESS_CHANCE else 1e9
@@ -4174,6 +4348,7 @@ class Game:
         self.disabled_ship = dict(object=[v/length*reach for v in direction],hull=40,nature=nature,
             ident=f'{random.randint(200,799)} {random.randint(0,999):03d} {random.randint(0,999):03d}',
             sent=now,lost_at=now+random.uniform(*DSC_NATURES[nature]),next_alert=now,acknowledged=False,detected=False)
+        self.dress_disabled(self.disabled_ship)
         self.assist_spawn_timer = 1e9
 
     def distress_bearing(self, obj):
@@ -4271,7 +4446,7 @@ class Game:
             spilled = random.randint(1,3) if self.enemy_kind == 'pirate' else random.randint(0,2)
             self.spill_cargo(self.enemy,[random.choice(loot) for _ in range(spilled)])
         else: spilled = 0
-        self.enemy = None
+        self.enemy = self.enemy_model = self.enemy_facing = self.enemy_up = None
         self.ship_target = None
         if self.enemy_kind == 'police':
             self.p.fine += 150
@@ -4470,7 +4645,7 @@ class Game:
         government = PROFILES[self.p.system][0]
         d.text(45,205,'Contraband sales pay Crymto. Crymto survives ship loss; banks hold credits.')
         if self.p.crymto_accepted: d.text(45,240,f'{government} port: Crymto pays for anything here, before credits.',(120,220,140))
-        else: d.text(45,240,'Contraband is paid for in Crymto first. Anarchy and feudal ports take it for anything.')
+        else: d.text(45,240,'Contraband is paid for in Crymto first. Lawless and Wartorn ports take it for anything.')
         d.text(45,290,f'Crymto to credits: {launder_fee}% fee. Credits to Crymto: {buy_fee}% fee.',GOLD)
         if check: d.text(45,320,f'{government} compliance: {check*100:.0f}% chance of a check; it freezes {COMPLIANCE_SEIZE}% and fines {COMPLIANCE_FINE}%.',RED)
         else: d.text(45,320,'No compliance checks at this port.',(120,220,140))
@@ -4581,7 +4756,7 @@ class Game:
         if waiting: d.text(35,610,f'{waiting} report{"s" if waiting > 1 else ""} waiting to send.',GOLD)
 
     INTRO = [
-        ('WELCOME, COMMANDER',[
+        ('WELCOME, SKIPPER',[
             f'A small ship, {START_CREDITS} credits and a name nobody knows yet.',
             'What should we call you?']),
         ('MAKE YOUR NAME',[
@@ -4603,7 +4778,7 @@ class Game:
             self.p.name = self.p.name.strip()
             if not self.p.name and not self.intro_name_skipped:
                 self.intro_name_skipped = True
-                self.message = 'Type a commander name first, or press ENTER again to stay Unnamed for now.'
+                self.message = 'Type a skipper name first, or press ENTER again to stay Unnamed for now.'
                 return
         if self.intro_page < len(self.INTRO)-1:
             self.intro_page += 1
@@ -4616,7 +4791,7 @@ class Game:
         self.p.intro_seen = True
         self.tutor.intro_closed()
         self.mode = self.intro_return
-        self.message = 'Welcome aboard, Commander. Press 0 any time to send a suggestion.'
+        self.message = 'Welcome aboard, Skipper. Press 0 any time to send a suggestion.'
         self.checkpoint()
 
     def draw_intro(self):
@@ -4631,17 +4806,17 @@ class Game:
                 y += 26
             y += 16
         if self.intro_page == 0 and not self.intro_online():
-            d.text(45,y,'COMMANDER NAME',GOLD)
+            d.text(45,y,'SKIPPER NAME',GOLD)
             d.rect(45,y+28,620,46,GOLD)
             if self.text_selection_all and self.text_selection_mode == 'intro' and self.p.name: d.fill(50,y+34,len(self.p.name)*11+8,34,(20,65,70))
             self.text_cursor(57,y+40,self.p.name)
-            d.text(45,y+90,'You can change it any time under Menu, Commander name.',(135,175,185))
+            d.text(45,y+90,'You can change it any time under Menu, Skipper name.',(135,175,185))
         d.text(45,615,'ENTER continues. You can reopen this from Menu.',(135,175,185))
 
     def finish_rename(self):
         self.p.name = self.p.name.strip()
         self.mode = self.rename_return
-        self.message = f'Commander name set: {self.p.name or "Unnamed"}.'
+        self.message = f'Skipper name set: {self.p.name or "Unnamed"}.'
         self.checkpoint()
 
     PAY_OFFLINE = 'Payment codes work online, docked at a station.'
@@ -4962,9 +5137,9 @@ class Game:
             d.text(35,y,'BEST STOPS FOR THE WHOLE LOAD',GOLD)
             for i,(world,value,profit,fuel) in enumerate(stops):
                 line = (f'{i+1}. {SYSTEMS[world][0]:<10} {value:>6,} cr  ({profit:+,} cr)  '
-                        +('here' if world == (None if p.deep_space else p.system) else f'{fuel:.1f} fuel'+('' if fuel <= p.fuel else ' - refuel first')))
+                        +('here' if world == (None if p.deep_space else p.system) else f'{litres(fuel)} fuel'+('' if fuel <= p.fuel else ' - refuel first')))
                 d.text(35,y+32+i*30,line,(120,220,140) if profit > 0 else (200,120,110))
-        d.text(35,590,f'Fuel {p.fuel:.2f}/7. Prices are the latest known; they move as others trade. * contraband pays Crymto.',dim)
+        d.text(35,590,f'Fuel {tank_text(p.fuel)}. Prices are the latest known; they move as others trade. * contraband pays Crymto.',dim)
         d.text(35,620,'7 or Return goes back.',dim)
 
     def draw_trades(self):
@@ -5020,7 +5195,7 @@ class Game:
         hours = int(m['hours']); minutes = int((m['hours']-hours)*60)
         d.text(45,449,f'Played {hours}h {minutes:02d}m, {bucket.get("trips",0):.0f} trips.',dim)
 
-        d.text(580,125,'Compared with the average commander',GOLD)
+        d.text(580,125,'Compared with the average skipper',GOLD)
         d.text(580,160,f'{"":<20}{"YOU":>11}{"AVERAGE":>12}',GOLD)
         info = (self.report_averages or {}).get(period) if isinstance(self.report_averages,dict) else None
         average = info.get('average') if isinstance(info,dict) and isinstance(info.get('average'),dict) else None
@@ -5029,11 +5204,11 @@ class Game:
         for i,(label,key,scale) in enumerate(rows):
             d.text(580,195+i*27,f'{label:<20}{fmt(m[key],scale):>11}{fmt(average.get(key) if average else None,scale):>12}')
         if average is None:
-            if isinstance(info,dict): note = f'Averages appear once {REPORT_MIN_COMMANDERS} commanders have played 10+ minutes in this period ({info.get("commanders",0)} so far).'
+            if isinstance(info,dict): note = f'Averages appear once {REPORT_MIN_COMMANDERS} skippers have played 10+ minutes in this period ({info.get("commanders",0)} so far).'
             elif self.market_client is None: note = 'Averages need an online connection.'
             else: note = 'Averages arrive from the server shortly.'
             for j,line in enumerate(textwrap.wrap(note,44)): d.text(580,340+j*25,line,dim)
-        else: d.text(580,340,f'Average of {info["commanders"]} commanders.',dim)
+        else: d.text(580,340,f'Average of {info["commanders"]} skippers.',dim)
 
         d.line(35,488,35+BOX_W,488)
         y = 500
@@ -5096,18 +5271,18 @@ class Game:
         d,p = self.d,self.p
         d.text(35,85,'VMS / VESSEL MANAGEMENT SYSTEM',GOLD)
         for i,line in enumerate([f'Hull {p.hull:.0f}% / Shields {self.shield:.0f}%',
-                                 f'Fuel {p.fuel:.2f}/7',
-                                 f'Cargo {sum(p.cargo)}/{p.capacity} tonnes / Mass {p.mass_factor:.2f}',
+                                 f'Fuel {tank_text(p.fuel)}',
+                                 f'Cargo {sum(p.cargo)} t aboard / {hold_text(p)} / Mass {p.mass_factor:.2f}',
                                  f'Maintenance wear {p.maintenance:.0f}% / Flights since service {p.flights_since_service}',
-                                 f'Front laser: {p.laser} / Rear: '+(p.rear_laser if 'rear' in p.equipment else 'no mount'),
-                                 f'Missiles {p.missiles}/4 / Mines {p.mines}/4',
+                                 f'Front laser: {LASER_NAMES[p.laser]} / Rear: '+(LASER_NAMES[p.rear_laser] if 'rear' in p.equipment else 'no mount'),
+                                 f'AGMs {p.missiles}/{MAX_MISSILES} / Mines {p.mines}/{MAX_MINES}',
                                  f'Engineering level {p.engineering_level}/5 / Workshop XP {p.workshop_xp}']):
             d.text(45,145+i*35,line)
         modules = ', '.join(label for key,label,*_ in EQUIPMENT if key in p.equipment) or 'Standard starter equipment'
         d.text(45,405,'FITTED EQUIPMENT',GOLD)
         for i,line in enumerate(textwrap.wrap(modules,90)[:3]): d.text(45,440+i*25,line)
         if self.vms_return == 'market':
-            d.text(45,535,f'Fuel {fuel_price(p.system)} cr/unit (sells for {fuel_price(p.system)*3//4}). Refill {p.fuel_cost()} cr / Service {p.service_cost()} cr')
+            d.text(45,535,f'Fuel {fuel_price_text(fuel_price(p.system))} (sells for {fuel_price_text(fuel_price(p.system)*3//4)}). Refill {p.fuel_cost()} cr / Service {p.service_cost()} cr')
         else:
             d.text(45,535,'Fuel, station repairs and fitting require docking. Field engineering remains available.')
         d.text(45,625,'BACKSPACE returns. 1 opens Nav. 8 opens engineering. D Licence. N Registry.')
@@ -5145,7 +5320,7 @@ class Game:
             ('Check updates',lambda:self.open_utility('updates')),
             ('Fullscreen / Ctrl+M',self.mouse_fullscreen),
             ('Alarm sound: '+('On' if self.alarm_sound else 'Off'),self.toggle_alarm_sound),
-            ('Commander name',lambda:self.open_utility('rename')),
+            ('Skipper name',lambda:self.open_utility('rename')),
             ('Introduction',lambda:self.open_utility('intro'))]
 
     def choose_menu_action(self, index):
@@ -5785,7 +5960,7 @@ class Game:
         d,dim,ship = self.d,(135,175,185),self.disabled_ship
         y = 145
         if 'dsc' not in self.p.equipment:
-            d.text(45,y,'No DSC comms console fitted. Outfitting sells one at tech 3+ stations.',GOLD)
+            d.text(45,y,'No DSC comms console fitted. Outfitting sells one at yard grade 3+ stations.',GOLD)
         elif not ship or 'ident' not in ship:
             d.text(45,y,'No DSC distress alerts received. The console listens while you fly.',GREEN)
         else:
@@ -6229,12 +6404,14 @@ class Game:
             self.hail_disabled_ship()
             return
         if k == ord('7'):
+            # Your own call when docking means arrest is your choice to surrender: then D may take you in.
+            if not self.p.deep_space and self.arrest_pending(): self.autopilot_consent = True
             self.request_docking()
             return
         if k == ord('4'):
             self.rear_view = not self.rear_view
             self.laser_flash = 0
-            self.message = (f'REAR VIEW - rear {self.p.rear_laser} laser ready. V changes it.' if 'rear' in self.p.equipment else 'REAR VIEW - no rear laser mount fitted. Buy one in outfitting.') if self.rear_view else 'FORWARD VIEW.'
+            self.message = (f'REAR VIEW - rear {LASER_NAMES[self.p.rear_laser].lower()} ready. V changes it.' if 'rear' in self.p.equipment else 'REAR VIEW - no rear laser mount fitted. Buy one in outfitting.') if self.rear_view else 'FORWARD VIEW.'
             if self.rear_view: self.licence_view('rear')
             return
         if k == ord('5'):
@@ -6285,7 +6462,9 @@ class Game:
         if k == ord('p'):
             self.nav = 'planet'
         if k in (UP, DOWN, LEFT, RIGHT, ord('w'),ord('s'),ord('q'),ord('e')):
-            self.autodock = False
+            # The pilot always wins: the ship keeps the speed and heading the Autopilot left it with.
+            if self.autodock or self.autopilot_armed: self.message = 'Manual control.'
+            self.autodock = self.autopilot_armed = False
             if k in (UP,DOWN,LEFT,RIGHT): self.course_assist = False
         if k == ord('d'):
             if self.p.deep_space:
@@ -6293,22 +6472,9 @@ class Game:
                 return
             self.nav = 'station'
             self.message = 'Fly through slot: centre +/-14m, height +/-6m, roll +/-14deg, speed 1-25.'
-        if k == ord('c'):
-            if self.p.deep_space: self.message = 'No station in deep space.'
-            elif 'docking' not in self.p.equipment: self.message = 'Buy a docking computer in outfitting (U).'
-            elif self.enemy: self.message = 'Clear hostile contact before auto-docking.'
-            elif self.docking_port()[2][2] <= 65 and stations.approach_angle(self.docking_port()[1]) > stations.APPROACH_CONE:
-                self.message = 'Docking computer: line up with a port first (within 30°).'
-            elif not 65 < self.docking_port()[2][2] <= 2500: self.message = 'Docking computer range: 2500 m.'
-            elif not self.docking_permitted(): self.message = 'Docking refused: wanted status.'
-            else:
-                self.course_assist = False
-                self.autodock = not self.autodock
-                if self.autodock and not self.dock_clearance: self.request_docking()
-                self.nav = 'station'
-                self.message = 'Docking computer engaged. C or manual controls cancel.' if self.autodock else 'Manual control.'
+        if k == ord('c'): self.autopilot_key()
         if k == ord('v'):
-            # Each laser you own sits on one mount at a time; the basic pulse laser is fitted to both.
+            # Each laser you own sits on one mount at a time; the basic burst laser is fitted to both.
             p = self.p
             if self.rear_view:
                 if 'rear' not in p.equipment:
@@ -6316,11 +6482,11 @@ class Game:
                     return
                 available = [name for name in LASERS if name == 'pulse' or (name in p.equipment and name != p.laser)]
                 p.rear_laser = available[(available.index(p.rear_laser)+1)%len(available)] if p.rear_laser in available else 'pulse'
-                self.message = 'Rear mount: '+p.rear_laser+' laser.'
+                self.message = 'Rear mount: '+LASER_NAMES[p.rear_laser]+'.'
                 return
             available = [name for name in LASERS if name == 'pulse' or (name in p.equipment and not (name == p.rear_laser and 'rear' in p.equipment))]
             p.laser = available[(available.index(p.laser)+1)%len(available)] if p.laser in available else 'pulse'
-            self.message = p.laser.title() + ' laser selected.'
+            self.message = LASER_NAMES[p.laser] + ' selected.'
         if k == ord('m'):
             if not self.enemy: self.message = 'No hostile target.'
             elif not self.p.missiles: self.message = 'No missiles. Buy replacements at a station.'
@@ -6335,7 +6501,7 @@ class Game:
             self.message = 'Asteroid beacon selected. V selects laser; SPACE fires; O scoops nearby ore.'
         if k == ord('j'):
             self.nav = 'sun'
-            self.message = f'Sun beacon. With scoops: skim below {SCOOP_ALTITUDE} m altitude at speed {SCOOP_SPEEDS[0]}-{SCOOP_SPEEDS[1]}; watch heat!'
+            self.message = f'Sun beacon. With an ECS: skim below {SCOOP_ALTITUDE} m altitude at speed {SCOOP_SPEEDS[0]}-{SCOOP_SPEEDS[1]}; watch heat!'
         if k == ord('o'): self.scoop()
 
     def selected_waypoint(self):
@@ -6380,6 +6546,194 @@ class Game:
         elif 32 <= key <= 126 and len(self.map_text) < 40:
             self.map_text += chr(key)
 
+    def autopilot_key(self):
+        """C: the Autopilot on, anywhere in a system, or off again."""
+        if self.autodock or self.autopilot_armed:
+            self.autodock = self.autopilot_armed = False
+            self.message = 'Manual control.'
+            return
+        if self.check_flight: self.message = CHECK_FLIGHT_MANUAL; return   # her test is of the pilot
+        if self.p.deep_space: self.message = 'No station in deep space.'; return
+        if 'docking' not in self.p.equipment: self.message = 'Buy an autopilot in outfitting (U).'; return
+        if self.broken_down: self.message = 'Drive disabled. Engineering 8 or distress Ctrl+E.'; return
+        if self.enemy: self.message = 'Autopilot unavailable: under attack. Clear hostile contact first.'; return
+        if self.jump_charge:
+            self.autopilot_armed = True
+            self.message = 'Autopilot armed: it takes over when you arrive.'
+            return
+        _,port,(_,_,z) = self.docking_port()
+        distance = math.sqrt(sum(v*v for v in port['position']))
+        if distance <= AUTOPILOT_HANDOVER:   # today's checks, unchanged in meaning
+            if z <= 65 and stations.approach_angle(port) > stations.APPROACH_CONE:
+                self.message = 'Autopilot: line up with a port first (within 30°).'; return
+            if z <= 65: self.message = 'Autopilot: too close to the port. Back off first.'; return
+            if not self.docking_permitted(): self.message = 'Docking refused: wanted status.'; return
+            if not self.autopilot_permitted():
+                self.message = 'Autopilot: '+self.AUTOPILOT_HOLD_TEXT.get(self.autopilot_hold_reason(),'docking refused.'); return
+        needed = distance*THRUST_FUEL_PER_METRE*self.p.mass_factor
+        if needed > self.p.fuel:
+            self.message = f'Autopilot: not enough fuel to reach the station ({litres(needed)} needed, {litres(self.p.fuel)} aboard).'
+            return
+        self.autopilot_engage()
+        if not self.dock_clearance and distance <= AUTOPILOT_CLEARANCE_RANGE and self.autopilot_permitted(): self.request_docking()
+        self.message = 'Autopilot engaged. D or manual controls cancel.'
+
+    def autopilot_engage(self):
+        self.course_assist = False
+        self.autodock = True
+        self.autopilot_armed = False
+        self.autopilot_said = None
+        self.autopilot_request_in = 0.
+        self.nav = 'station'
+
+    def autopilot_jump_cancelled(self):
+        """The jump is off: an Autopilot armed for it carries on here."""
+        if not self.autopilot_armed: return
+        self.autopilot_armed = False
+        self.autopilot_engage()
+        self.message += ' Autopilot back on.'
+
+    def autopilot_permitted(self):
+        """Whether the Autopilot may radio and dock here by itself: the station lets you dock freely, or you have
+        chosen to surrender (surrendering, or you radioed with R yourself and hold the clearance to surrender). It never
+        takes a wanted pilot in to be arrested, or settles a fine for you: checked every tick, so a fine that arrives
+        mid-approach stops it short. A hostile station that has lost its police lets anyone dock, but radioing it
+        means surrender or a settled fine (request_docking), so that too is the pilot's own R."""
+        return (self.surrendering or (self.autopilot_consent and self.dock_clearance > 0)
+                or (self.station_allows() and not self.arrest_pending() and not self.station_hostilities[self.p.system]))
+
+    def autopilot_hold_reason(self):
+        """Why it may not dock: 'arrest' (a lawful station would arrest you), 'hostile' (a hostile station without
+        police: docking means surrender or settlement) or 'refused'."""
+        if self.arrest_pending(): return 'arrest'
+        if self.station_hostilities[self.p.system] and self.station_allows(): return 'hostile'
+        return 'refused'
+
+    AUTOPILOT_HOLD_TEXT = dict(arrest='docking here means arrest. R to surrender, then D.',
+                               hostile='this station is hostile. Docking means surrender or settlement — R if you choose to.')
+
+    def autopilot_hold(self, where='at the approach point'):
+        """Stopped short of the station, refused: say why, once. Facing arrest or a hostile station's terms it hands
+        back once stopped outside the security zone (autopilot_backed_off), so R then D brings it back."""
+        reason = self.autopilot_hold_reason()
+        if self.autopilot_said != reason:
+            self.autopilot_said = reason
+            self.message = (f'Autopilot holding {where}: {self.AUTOPILOT_HOLD_TEXT[reason]}' if reason in self.AUTOPILOT_HOLD_TEXT
+                            else f'Autopilot holding {where}. Docking refused: hostile or wanted status.')
+        if reason != 'refused' and abs(self.speed) < .5 and self.autopilot_backed_off():
+            self.autodock,self.speed = False,0.   # stopped dead: no creep into the port
+
+    def autopilot_backed_off(self):
+        """True unless it sits in front of the port inside AUTOPILOT_HOLD_OFF, where a stopped ship without
+        clearance would set off the station's security check."""
+        _,_,(x,y,z) = self.docking_port()
+        return not (-100 < z < AUTOPILOT_HOLD_OFF and math.hypot(x,y) < 250)
+
+    def autopilot_far(self):
+        """True while it flies to the approach point; False once today's approach flies the last 2.5 km. Refused
+        docking, it holds at the approach point (and a little inside it)."""
+        _,port,_ = self.docking_port()
+        distance = math.sqrt(sum(v*v for v in port['position']))
+        return distance > AUTOPILOT_HANDOVER or (distance > AUTOPILOT_HANDOVER-300 and not self.autopilot_permitted())
+
+    def autopilot_stage(self):
+        """'to station', 'lining up' or 'docking', or '' when it is off."""
+        if not self.autodock or self.mode != 'flight' or self.p.deep_space: return ''
+        if self.autopilot_far(): return 'to station'
+        return 'docking' if stations.approach_angle(self.docking_port()[1]) <= AUTODOCK_CONE else 'lining up'
+
+    def autopilot_status(self):
+        """The cockpit's AUTOPILOT line, or '' when it is off."""
+        stage = self.autopilot_stage()
+        if not stage: return ''
+        if self.autopilot_said in ('refused','arrest','hostile'): return 'AUTOPILOT: holding, '+self.autopilot_said
+        if stage == 'to station':
+            distance = math.sqrt(sum(v*v for v in self.docking_port()[1]['position']))
+            return f'AUTOPILOT: to station {distance/1000:.1f} km'
+        return 'AUTOPILOT: '+stage
+
+    def autopilot_turn(self, look, dt, mass):
+        """Turn the nose towards look with the player's own turning path (as approach guidance does); the yaw
+        and pitch errors."""
+        lx,ly,lz = look
+        c,s = math.cos(self.roll),math.sin(self.roll)
+        lx,ly = lx*c+ly*s,-lx*s+ly*c
+        turn = self.handling()
+        yaw_error,pitch_error = math.atan2(lx,lz),math.atan2(ly,math.hypot(lx,lz))
+        if not self.broken_down and self.p.fuel > 0:
+            self.turn_world(max(-.65*dt/mass*turn,min(.65*dt/mass*turn,yaw_error)),max(-.5*dt/mass*turn,min(.5*dt/mass*turn,pitch_error)))
+        return yaw_error,pitch_error
+
+    def autopilot_obstacles(self):
+        """(centre, keep-out radius) for everything it steers round: the station's body, the planet (beyond the
+        slingshot's reach), other ships and rocks. Only beyond the 2,500 m handover, by design: inside it today's
+        approach logic flies unchanged, and it does not steer round ships."""
+        middle = [c+a*stations.LENGTH/2 for c,a in zip(self.station,self.station_axis)]
+        found = [(middle,stations._bound(self.station_kind())+150),(self.planet,self.planet_radius*3+100)]
+        ships = [t['object'] for t in self.traffic]+[p['object'] for p in self.other_players.values()]
+        if self.disabled_ship: ships.append(self.disabled_ship['object'])
+        found += [(obj[:3],AUTOPILOT_SHIP_CLEARANCE) for obj in ships+self.asteroids]
+        return found
+
+    def autopilot_avoid(self, target):
+        """Where to aim for target: target itself, or, when the straight line passes through a keep-out sphere, a
+        point beside the nearest such sphere (half as far out again) on the side the line passes."""
+        length2 = sum(v*v for v in target)
+        if length2 < 1: return target
+        nearest = None
+        for centre,radius in self.autopilot_obstacles():
+            if sum((a-b)**2 for a,b in zip(target,centre)) < radius*radius: continue   # the target sits inside it
+            t = sum(a*b for a,b in zip(centre,target))/length2
+            if not 0 < t < 1: continue
+            miss = [a*t-c for a,c in zip(target,centre)]
+            gap = math.sqrt(sum(v*v for v in miss))
+            if gap >= radius: continue
+            distance = math.sqrt(sum(v*v for v in centre))
+            if nearest is None or distance < nearest[0]: nearest = (distance,centre,radius,miss,gap)
+        if nearest is None: return target
+        _,centre,radius,miss,gap = nearest
+        if gap < 1e-6:   # dead centre: go round to the side
+            miss = [target[2],0.,-target[0]] if abs(target[0])+abs(target[2]) > 1e-6 else [1.,0.,0.]
+            gap = math.sqrt(sum(v*v for v in miss))
+        return [c+m/gap*radius*1.5 for c,m in zip(centre,miss)]
+
+    def autopilot_clearance(self, dt):
+        """Radio for clearance once in range, and again whenever it runs out; refused, say why once."""
+        self.autopilot_request_in = max(0,self.autopilot_request_in-dt)
+        if not self.autopilot_permitted():
+            return
+        if self.autopilot_said in ('refused','arrest','hostile'): self.autopilot_said = None
+        distance = math.sqrt(sum(v*v for v in self.docking_port()[1]['position']))
+        if (self.dock_clearance <= 0 and not self.docking_pending and self.autopilot_request_in <= 0
+                and distance <= AUTOPILOT_CLEARANCE_RANGE):
+            self.autopilot_request_in = 10.
+            self.request_docking()
+
+    def autopilot_long_range(self, dt, mass):
+        """Beyond the handover: fly to the port's approach point (or straight in down the approach cone), round
+        anything in the way, slowing to today's 70 m/s cap at the handover."""
+        _,port,_ = self.docking_port()
+        position,outward = port['position'],port['outward']
+        permitted = self.autopilot_permitted()
+        # Refused, it holds 100 m beyond the handover: outside an overwhelmed station's 2,500 m laser range.
+        point = [c+o*(AUTOPILOT_HANDOVER+(0 if permitted else 100)) for c,o in zip(position,outward)]
+        target = list(position) if permitted and stations.approach_angle(port) <= AUTODOCK_CONE else point
+        look = self.autopilot_avoid(target)
+        self.autopilot_turn(look,dt,mass)
+        self.roll += max(-dt/mass,min(dt/mass,self.slot_error()))
+        distance = math.sqrt(sum(v*v for v in position))
+        if permitted:
+            desired = min(AUTOPILOT_CRUISE/mass,70/mass+max(0,distance-AUTOPILOT_HANDOVER)*.1)
+        else:
+            gap = math.sqrt(sum(v*v for v in point))
+            desired = min(AUTOPILOT_CRUISE/mass,gap*.2) if gap > 30 else 0
+            if gap <= 30: self.autopilot_hold()
+        # Off the nose, it slows and turns before closing in: nothing ahead at more than 20 degrees.
+        lx,ly,lz = look
+        off = math.atan2(math.hypot(lx,ly),lz)
+        desired = 0 if off > .35 else desired*(1-off/.35)
+        self.speed += max(-70*dt/mass,min(70*dt/mass,desired-self.speed))
+
     def jump(self):
         if self.broken_down:
             self.message = 'Drive disabled. Engineering 8 or distress Ctrl+E.'
@@ -6395,8 +6749,8 @@ class Game:
         elif dist < .001: self.message = 'Already at that coordinate.'
         elif cost > self.p.fuel:
             cruise = dist*.25*self.p.mass_factor
-            self.message = (f'Jump requires {cost:.2f} fuel; aboard {self.p.fuel:.2f}. '
-                            +(f'T cruises there for {cruise:.2f} (slower), or refuel at a station.' if cruise <= self.p.fuel else 'Refuel at a station (2 VMS) or skim a sun.'))
+            self.message = (f'Jump requires {litres(cost)} of fuel; aboard {litres(self.p.fuel)}. '
+                            +(f'T cruises there for {litres(cruise)} (slower), or refuel at a station.' if cruise <= self.p.fuel else 'Refuel at a station (2 VMS) or skim a sun.'))
         elif not self.p.deep_space and (station := math.sqrt(sum(v*v for v in self.station))) < PATROL_RADIUS:
             # Station mass lock: you must leave the patrolled space before jumping.
             self.message = f'Hyperspace blocked by station mass lock. Fly beyond {PATROL_RADIUS:,} m (now {station:,.0f} m).'
@@ -6404,8 +6758,9 @@ class Game:
             destination = dict(name=w['name'],position=w['position'][:],system=w['system'])
             self.jump_charge = dict(destination=destination,cost=cost,held=0.)
             self.mode = 'flight'
+            self.autopilot_armed = self.autopilot_armed or self.autodock   # on through the jump, flying on arrival
             self.autodock = False
-            self.message = 'Hold H: hyperspace in 3 seconds. Release to cancel.'
+            self.message = 'Hold H: hyperspace in 3 seconds. Release to cancel.'+(' Autopilot armed.' if self.autopilot_armed else '')
 
     def begin_cruise(self):
         if self.broken_down:
@@ -6419,7 +6774,7 @@ class Game:
         dist = galactic_distance(self.p.position,w['position'])
         cost = dist*.25*self.p.mass_factor
         if dist < .001: self.message = 'Already at that coordinate.'; return
-        if cost > self.p.fuel: self.message = f'Cruise requires {cost:.2f} fuel.'; return
+        if cost > self.p.fuel: self.message = f'Cruise requires {litres(cost)} of fuel.'; return
         if self.enemy: self.message = 'Clear hostile contact before beginning cruise.'; return
         self.cruise = dict(start=self.p.position[:],destination=dict(w),distance=dist,
                            elapsed=0.,duration=dist*CRUISE_SECONDS_PER_LY*self.p.mass_factor,
@@ -6531,11 +6886,11 @@ class Game:
         dist = galactic_distance(p.position,w['position'])
         sec = dist*CRUISE_SECONDS_PER_LY*p.mass_factor
         info = [w['name'],f'X {w["position"][0]:.2f}  Y {w["position"][1]:.2f}',
-                f'Distance {dist:.2f} LY',f'Jump fuel {self.jump_fuel_to(w):.2f}'+(' (beacon -10%)' if self.jump_fuel_to(w) < hyperspace_cost(dist)-1e-9 else ''),
-                f'Cruise fuel {dist*.25*p.mass_factor:.2f}',f'Cruise ETA {int(sec//60)}m {int(sec%60)}s',f'Aboard fuel {p.fuel:.2f}/7']
+                f'Distance {dist:.2f} LY',f'Jump fuel {litres(self.jump_fuel_to(w))}'+(' (beacon -10%)' if self.jump_fuel_to(w) < hyperspace_cost(dist)-1e-9 else ''),
+                f'Cruise fuel {litres(dist*.25*p.mass_factor)}',f'Cruise ETA {int(sec//60)}m {int(sec%60)}s',f'Aboard {tank_text(p.fuel)}']
         if w['system'] is not None:
             i = w['system']; govt,pop,size = PROFILES[i]
-            info += [SYSTEMS[i][1],f'Technology {TECH[i]}',govt,
+            info += [SYSTEMS[i][1],f'Yard grade {TECH[i]}',govt,
                      'I / Profile: full details',
                      'Docking: allowed' if self.station_allows(i) else 'Docking: refused']
         else: info += ['Uninhabited coordinates','No station or services']
@@ -6569,16 +6924,16 @@ class Game:
         facts = [f'Coordinates: {position[0]:.2f}, {position[1]:.2f}',
                  'Economy: '+economy_name,'Government: '+government,
                  f'Population: {self.economy_report(i)["population"] if self.economy_report(i) else population:.1f} billion',f'Diameter: {size:,} km',
-                 f'Technology level: {TECH[i]}',
+                 f'Yard grade: {TECH[i]}',
                  f'Police reserve: {self.p.station_police_remaining[i]}/{STATION_POLICE_CAPACITY}',
-                ('Customs: minimal'+('; no trade tax' if VIEW else '')) if government in ('Anarchy','Feudal') else
+                ('Customs: minimal'+('; no trade tax' if VIEW else '')) if government in ('Lawless','Wartorn') else
                 (f'Customs: regulated; trade tax {VIEW["tax"][i]*100:.1f}%' if VIEW else 'Customs: regulated; contraband can be seized'),
                  ('Docking: allowed' if self.station_allows(i) else 'Docking: refused')+(' / '+self.hostility_label(i) if self.station_hostilities[i] else '')]
         for row,line in enumerate(facts): d.text(35,140+row*31,line)
         d.text(35,410,'STATION FACILITIES',GOLD)
         for row,line in enumerate(['Fuel, hull service and equipment fitting',
                                    'Bank, cargo-bay rental and purchase',
-                                   'Crymto exchange' if government in ('Anarchy','Feudal') else 'No Crymto exchange',
+                                   'Crymto exchange' if government in ('Lawless','Wartorn') else 'No Crymto exchange',
                                    'Daily cargo, inventory and workshop jobs',
                                    'Engineering training and fine payments']): d.text(35,440+row*27,line)
         blackout = solar_flare() and i != self.p.system
@@ -6646,7 +7001,7 @@ class Game:
 
     def guidance_aim(self, target, label):
         """Where Y guidance turns the nose. For anything but the station, the target itself. For the station, a
-        point on the active port's axis: from outside the approach cone, at least 300 m out (as the docking computer
+        point on the active port's axis: from outside the approach cone, at least 300 m out (as the autopilot
         flies), to line you up first; inside it, halfway between you and the port, which glides you onto the axis
         as you close (the slot is 12 m across). Head on, that point is straight ahead of the port, as before."""
         if not label.startswith('STATION / PORT'): return list(target[:3])
@@ -6684,7 +7039,7 @@ class Game:
     def toggle_radar_range(self):
         """Ctrl+L / RANGE: the long-range scanner switches the radar between 2.5 and 25 km."""
         if 'lrscan' not in self.p.equipment:
-            self.message = 'Long-range scanner required (outfitting, tech 6).'
+            self.message = 'Long-range scanner required (outfitting, yard grade 6).'
             return
         self.radar_range = SCANNER_RANGE if self.radar_range == LONG_RANGE else LONG_RANGE
         self.message = (f'Radar: long range, {LONG_RANGE//1000} km. Distress calls show at their true range.' if self.radar_range == LONG_RANGE
@@ -6899,12 +7254,14 @@ class Game:
         if self.mode != 'flight' or ord('h') not in self.keys:
             self.jump_charge = None
             self.message = 'Hyperspace cancelled. Hold H continuously for 3 seconds.'
+            self.autopilot_jump_cancelled()
             return
         charge['held'] = min(3,charge['held']+dt)
         if charge['held'] < 3: return
         if self.p.fuel < charge['cost']:
             self.jump_charge = None
             self.message = 'Hyperspace cancelled: insufficient fuel at ignition.'
+            self.autopilot_jump_cancelled()
             return
         self.p.fuel = round(self.p.fuel-charge['cost'],5)
         self.jump_warp = dict(destination=charge['destination'],elapsed=0.)
@@ -6941,7 +7298,7 @@ class Game:
         """Why fitted scoops are or are not collecting sun fuel right now."""
         altitude = self.sun_altitude()
         if 'scoops' not in self.p.equipment: return 'none','SCOOP: NOT FITTED'
-        if self.p.fuel >= 7: return 'full','SCOOP: TANK FULL'
+        if self.p.fuel >= TANK: return 'full','SCOOP: TANK FULL'
         if altitude < 0: return 'low','SCOOP: CLIMB OUT'
         if altitude > SCOOP_ALTITUDE: return 'high',f'SCOOP: BELOW {SCOOP_ALTITUDE} m'
         if not SCOOP_SPEEDS[0] <= self.speed <= SCOOP_SPEEDS[1]: return 'speed',f'SCOOP: SPEED {SCOOP_SPEEDS[0]}-{SCOOP_SPEEDS[1]}'
@@ -7009,7 +7366,7 @@ class Game:
     def scoop(self):
         """O: say what the scoops are doing (they collect by themselves)."""
         if 'scoops' not in self.p.equipment:
-            self.message = 'Fuel / cargo scoops required.'
+            self.message = 'ECS required.'
             return
         status = self.ore_status()
         if status is None or status[0] >= SCOOP_RANGE: self.message = f'Fly within {SCOOP_RANGE} m of an ore fragment.'
@@ -7043,6 +7400,11 @@ class Game:
         if self.enemy: objects.append(self.enemy)
         if self.enemy_shot: objects.append(self.enemy_shot['position'])
         if self.disabled_ship: objects.append(self.disabled_ship['object'])
+        # Headings turn with the world (they are directions: move_world leaves them alone).
+        objects += [t[key] for t in self.traffic for key in ('facing','up') if key in t]
+        if self.enemy and self.enemy_facing is not None: objects += [self.enemy_facing,self.enemy_up]
+        if self.disabled_ship and 'facing' in self.disabled_ship: objects += [self.disabled_ship['facing'],self.disabled_ship['up']]
+        objects += [p[key] for p in self.other_players.values() for key in ('facing','up') if key in p]   # until the next presence update
         objects += [e['position'] for e in self.explosions]+[m['position'] for m in self.missiles_in_flight]+self.check_objects()
         for obj in objects:
             x,y,z = obj[:3]
@@ -7072,6 +7434,7 @@ class Game:
         if self.jump_charge and (self.mode != 'flight' or ord('h') not in self.keys):
             self.jump_charge = None
             self.message = 'Hyperspace cancelled: H released or cockpit focus lost.'
+            self.autopilot_jump_cancelled()
         if self.mode == 'hyperspace':
             self.jump_warp['elapsed'] += dt
             if self.jump_warp['elapsed'] >= 1.6:
@@ -7079,6 +7442,12 @@ class Game:
                 self.p.jumps += 1
                 self.arrive(destination['position'],destination['system'],from_hyperspace=True)
                 self.message = 'Arrived at '+destination['name']+'.'
+                if self.autopilot_armed:
+                    self.autopilot_armed = False
+                    if self.p.deep_space: self.message += ' Autopilot off: no station in deep space.'
+                    else:
+                        self.autopilot_engage()
+                        self.message += ' Autopilot engaged: flying you in. D or manual controls cancel.'
                 self.herbert_event('jumped')
                 self.licence_skill('jump')
             return
@@ -7104,7 +7473,7 @@ class Game:
             if self.breakdown_in <= 0:
                 self.breakdown_in = None
                 self.broken_down = True
-                self.autodock = False
+                self.autodock = self.autopilot_armed = False
                 self.jump_charge = None
                 self.speed = 0
                 self.message = 'DRIVE BREAKDOWN. Engineering 8 for repairs, or Ctrl+E for rescue.'
@@ -7131,10 +7500,17 @@ class Game:
             if self.p.fuel == 0: self.cloaked = False
         mass = self.p.mass_factor
         self.station_angle = (self.station_angle + 0.25*dt) % (2*math.pi)
-        if self.autodock and self.enemy:
-            self.autodock = False
-            self.message = 'Hostile contact: docking computer disengaged.'
-        if self.autodock:
+        if self.autopilot_armed and not self.jump_charge: self.autopilot_armed = False   # its jump is gone
+        if (self.autodock or self.autopilot_armed) and self.enemy:
+            # It never flies you into a fight, and doesn't switch itself back on: C again once you're clear.
+            self.autodock = self.autopilot_armed = False
+            self.message = 'Autopilot off: under attack.'
+        if self.autodock: self.autopilot_clearance(dt)
+        back = None   # the Autopilot backing out of the security zone, refused: this tick's move along the port's axis
+        if self.autodock and self.autopilot_far():
+            self.autopilot_long_range(dt,mass)
+            dx,dy = 0.,0.
+        elif self.autodock:
             _,port,(_,_,z) = self.docking_port()
             position,outward = port['position'],port['outward']
             lined_up = stations.approach_angle(port) <= AUTODOCK_CONE
@@ -7147,13 +7523,7 @@ class Game:
                 # in front of the port's face, clear of the hull.
                 look = [c+o*max(z,300.) for c,o in zip(position,outward)]
             # Turn the nose with the player's own turning path (as approach guidance does).
-            lx,ly,lz = look
-            c,s = math.cos(self.roll),math.sin(self.roll)
-            lx,ly = lx*c+ly*s,-lx*s+ly*c
-            turn = self.handling()
-            yaw_error,pitch_error = math.atan2(lx,lz),math.atan2(ly,math.hypot(lx,lz))
-            if not self.broken_down and self.p.fuel > 0:
-                self.turn_world(max(-.65*dt/mass*turn,min(.65*dt/mass*turn,yaw_error)),max(-.5*dt/mass*turn,min(.5*dt/mass*turn,pitch_error)))
+            yaw_error,pitch_error = self.autopilot_turn(look,dt,mass)
             facing = abs(yaw_error) < .05 and abs(pitch_error) < .05
             self.roll += max(-dt/mass,min(dt/mass,self.slot_error()))
             limit = 80*dt/mass
@@ -7167,6 +7537,13 @@ class Game:
                 desired = min(70/mass,max(12,math.sqrt(sum(v*v for v in look))*.2))
             if not facing: desired = 0   # only close in once the nose is on the mark
             if self.dock_clearance <= 0: desired = 0
+            if not self.autopilot_permitted():   # refused or withdrawn on the way in: stop and say why
+                desired = 0
+                if not self.autopilot_backed_off() and abs(self.speed) < .5:
+                    # Inside the security zone: back straight out along the port's axis, so a ship left there
+                    # stopped with no clearance never draws the station's no-clearance fine.
+                    back = [o*AUTOPILOT_BACK_OFF_SPEED/mass*dt for o in outward]
+                self.autopilot_hold('here')
             self.speed += max(-70*dt/mass,min(70*dt/mass,desired-self.speed))
         else:
             self.speed = max(-60/mass,min(180/mass+self.assist_speed,self.speed+((ord('w') in self.keys)-(ord('s') in self.keys))*70*dt/mass))
@@ -7198,8 +7575,9 @@ class Game:
                 yaw = max(-.65*dt/mass*turn,min(.65*dt/mass*turn,math.atan2(x,z)))
                 pitch = max(-.5*dt/mass*turn,min(.5*dt/mass*turn,math.atan2(y,math.hypot(x,z))))
                 if not self.broken_down and self.p.fuel > 0: self.turn_world(yaw,pitch)
-        if self.broken_down: self.speed,dx,dy = 0,0,0
+        if self.broken_down: self.speed,dx,dy,back = 0,0,0,None
         dz = self.speed*dt
+        if back: dx,dy,dz = back
         required = math.sqrt(dx*dx+dy*dy+dz*dz)*THRUST_FUEL_PER_METRE*mass
         if required > self.p.fuel and required:
             factor = self.p.fuel/required
@@ -7211,6 +7589,9 @@ class Game:
             self.message = 'Fuel exhausted. Press Ctrl+E for a distress call and recovery offers.'
         ship_previous = []
         if self.enemy: ship_previous.append(('enemy',self.enemy,self.enemy[:3]))
+        # The enemy's true motion this frame is its motion relative to you plus your own (dx,dy,dz): the relative
+        # block below keeps it near you, so a tail-chasing pirate faces your way.
+        enemy_before = (self.enemy,self.enemy[:3]) if self.enemy else None
         if self.disabled_ship: ship_previous.append(('disabled',self.disabled_ship['object'],self.disabled_ship['object'][:]))
         self.move_world(dx,dy,dz)
         if self.enemy:
@@ -7221,15 +7602,23 @@ class Game:
         if self.mode == 'dead': return
         _,port,(px,py,pz) = self.docking_port()
         if pz <= 65 and math.hypot(px,py) < 110 and pz > -100:
-            if self.docking_safe(): self.dock(); return
-            self.damage(5+abs(self.speed)*.2 if abs(self.speed) <= 25 else 35+abs(self.speed)*.7)
-            # Bounce back to 130 m out in front of the port.
-            for i in range(3): self.station[i] -= (130-pz)*port['outward'][i]
-            self.speed = 0
-            self.autodock = False
-            self.course_assist = False
-            self.message = 'Station contact! Use Ctrl+F fine steering; centre slot, roll within +/-14deg, speed 1-25; request clearance with R.'
-            if self.mode == 'dead': return
+            if self.autodock and not self.autopilot_permitted():
+                # The last metres: a fine or a withdrawal now still stops it at the port's mouth, never inside. It
+                # puts the ship back at 66 m out (up to about a metre: no damage), where a stopped ship is not station
+                # contact; from there it backs out past AUTOPILOT_HOLD_OFF before it hands back (the hold below).
+                for i in range(3): self.station[i] -= (66-pz)*port['outward'][i]
+                self.speed = 0
+                self.autopilot_hold('at the port')
+            elif self.docking_safe(): self.dock(); return
+            else:
+                self.damage(5+abs(self.speed)*.2 if abs(self.speed) <= 25 else 35+abs(self.speed)*.7)
+                # Bounce back to 130 m out in front of the port.
+                for i in range(3): self.station[i] -= (130-pz)*port['outward'][i]
+                self.speed = 0
+                self.autodock = False
+                self.course_assist = False
+                self.message = 'Station contact! Use Ctrl+F fine steering; centre slot, roll within +/-14deg, speed 1-25; request clearance with R.'
+                if self.mode == 'dead': return
         # Rocks can damage the ship; fragments drift past if not collected.
         for rock in self.asteroids[:]:
             if rock[2] < 35:
@@ -7255,9 +7644,9 @@ class Game:
             if old_heat < 70 <= self.heat: self.message = 'THERMAL WARNING: shield protection degrading. Leave the sun before shields fail!'
             if old_heat < 90 <= self.heat: self.message = 'THERMAL WARNING: temperature tolerance exceeded! Turn away from the sun!'
             if self.scoop_status()[0] == 'collecting':
-                if self.p.fuel < 7 and not self.message.startswith('Sun skimming'):
+                if self.p.fuel < TANK and not self.message.startswith('Sun skimming'):
                     self.message = 'Sun skimming: collecting fuel. Turn away before overheating!'
-                self.p.fuel = min(7,self.p.fuel+0.15*dt)
+                self.p.fuel = min(TANK,self.p.fuel+0.15*dt)
             if self.heat > 70: self.damage((2+(self.heat-70)*.25)*dt)
             if self.mode == 'dead': return
         else: self.heat = max(0,self.heat-10*dt)
@@ -7265,7 +7654,7 @@ class Game:
         self.spawn -= dt
         patrolled = self.in_patrol_zone()
         if self.enemy and self.enemy_kind == 'pirate' and patrolled:
-            self.enemy = self.ship_target = None
+            self.enemy = self.enemy_model = self.enemy_facing = self.enemy_up = self.ship_target = None
             self.spawn = 24
             self.message = 'Pirate breaks off: you are inside the station patrol zone.'
         if self.spawn <= 0 and not self.enemy and self.station[2] > 450:
@@ -7278,14 +7667,16 @@ class Game:
             else:
                 self.enemy_kind = 'pirate'
                 self.enemy = [random.uniform(-120,120),random.uniform(-70,70),-850. if random.random()<.3 else 850.,6,0.]
+                self.dress_enemy()
                 self.pirate_tailing,self.pirate_passing = 0.,False
                 self.message = 'Hostile contact! SPACE lasers; M missile. On your tail? Brake hard to make it overshoot.'
                 self.radio('UNKNOWN SHIP','routine',random.choice(PIRATE_TAUNTS))
                 self.checkpoint()
         if self.enemy:
             e = self.enemy
-            e[0] += math.sin(time.monotonic()*1.7)*25*dt
-            e[1] += math.cos(time.monotonic()*1.3)*20*dt
+            wobble = (math.sin(time.monotonic()*1.7)*25*dt,math.cos(time.monotonic()*1.3)*20*dt,0.)
+            e[0] += wobble[0]
+            e[1] += wobble[1]
             # It closes to its station gradually and never snaps back: turning really does swing it round.
             ahead,behind = PIRATE_HOLD
             if self.enemy_kind == 'pirate' and getattr(self,'pirate_passing',False):
@@ -7316,6 +7707,9 @@ class Game:
                 self.enemy_shot = dict(position=e[:3],kind=self.enemy_kind,remaining=.25)
                 self.damage(7 if abs(e[0])<250 and abs(e[1])<180 else 2)
                 if self.mode == 'dead': return
+        if enemy_before and self.enemy is enemy_before[0] and self.enemy_facing is not None:
+            # The hover wobble is a jiggle, not where the ship is going: it is left out of the heading.
+            self.steer_facing(self.enemy_facing,self.enemy_up,[a-b+m-w for a,b,m,w in zip(self.enemy[:3],enemy_before[1],(dx,dy,dz),wobble)],dt)
         self.ship_collisions(ship_previous)
         if self.mode == 'dead': return
         if 32 in self.keys and self.cooldown <= 0:
@@ -7361,7 +7755,7 @@ class Game:
                 self.spill_cargo(obj,[random.choice((0,1,3,4,5,5,6,8)) for _ in range(random.randint(2,4))])
                 self.disabled_ship = self.ship_target = None
                 self.p.kills += 1
-                lawful = not self.p.deep_space and PROFILES[self.p.system][0] not in ('Anarchy','Feudal')
+                lawful = not self.p.deep_space and PROFILES[self.p.system][0] not in ('Lawless','Wartorn')
                 if lawful: self.p.fine += 100
                 self.message = 'Disabled ship destroyed: cargo canisters spilled.'+(' Attacking a helpless vessel: 100 cr fine.' if lawful else ' Fly slowly to scoop them.')
                 self.checkpoint()
@@ -7471,7 +7865,7 @@ class Game:
     def tax_label(self, system):
         """The station's trade tax for the exchange header (nothing from a market without a Council)."""
         if not VIEW: return ''
-        return ' / NO TAX' if PROFILES[system][0] in ('Anarchy','Feudal') or not VIEW['tax'][system] else f' / TAX {VIEW["tax"][system]*100:.1f}%'
+        return ' / NO TAX' if PROFILES[system][0] in ('Lawless','Wartorn') or not VIEW['tax'][system] else f' / TAX {VIEW["tax"][system]*100:.1f}%'
 
     def latest_decree(self, system):
         return next((d for d in reversed(VIEW['decrees']) if d['system'] == system),None) if VIEW and VIEW.get('decrees') else None
@@ -7519,7 +7913,7 @@ class Game:
         ly = galactic_distance(self.p.position,coordinates(system))
         fuel = self.jump_fuel_to(dict(position=coordinates(system),system=system))
         reach = '1 jump' if fuel <= FUEL_CAPACITY else 'more than one jump'
-        return [f'Distance {ly:.2f} LY ({reach})',f'Jump fuel {fuel:.2f}; you hold {self.p.fuel:.2f}']
+        return [f'Distance {ly:.2f} LY ({reach})',f'Jump fuel {litres(fuel)}; you hold {litres(self.p.fuel)}']
 
     def story_lines(self, item, now=None):
         """The text of a ticker story's window (a list of lines; empty for a quiet ticker)."""
@@ -7538,7 +7932,7 @@ class Game:
             lines = [ref['text']+'.',f'{SYSTEMS[system][0]} ({government})']
             if ago is not None: lines.append(f'Decreed {int(ago//3600)} h {int(ago%3600//60)} min ago' if ago >= 3600 else f'Decreed {int(ago//60)} min ago')
             if VIEW and VIEW.get('tax') is not None:
-                tax = 0 if government in ('Anarchy','Feudal') else VIEW['tax'][system]
+                tax = 0 if government in ('Lawless','Wartorn') else VIEW['tax'][system]
                 lines.append(f'Station tax now: {tax*100:.1f}%' if tax else 'Station tax now: none')
             if VIEW and VIEW.get('rate') is not None: lines.append(f'Council interest rate: {VIEW["rate"]*100:.1f}%')
             lines += self.distance_line(system)
@@ -7665,13 +8059,17 @@ class Game:
             if s['source'] == here and 0 <= now-s['depart'] < TRADER_DEPART_SECONDS-5:
                 offset = [random.uniform(-60,60),random.uniform(-40,40),random.uniform(-120,-60)]
                 obj = [a+b for a,b in zip(self.station,offset)]+[TRADER_HULL]
-                self.traffic.append(dict(shipment=s,name=s['name'],phase='depart',object=obj,leave_at=s['depart']+TRADER_DEPART_SECONDS))
+                facing,up = self.new_heading(offset)   # away from the station
+                self.traffic.append(dict(shipment=s,name=s['name'],phase='depart',object=obj,leave_at=s['depart']+TRADER_DEPART_SECONDS,
+                                         model=ships.trader_model(s['id']),facing=facing,up=up))
             elif s['dest'] == here and 8 < s['arrive']-now <= TRADER_INBOUND_SECONDS:
                 direction = [random.uniform(-1,1),random.uniform(-.4,.4),random.uniform(-1,1)]
                 length = math.sqrt(sum(v*v for v in direction)) or 1
                 reach = TRADER_SPEED*(s['arrive']-now)
                 obj = [c+v/length*reach for c,v in zip(self.station,direction)]+[TRADER_HULL]
-                self.traffic.append(dict(shipment=s,name=s['name'],phase='inbound',object=obj))
+                facing,up = self.new_heading([-v for v in direction])   # towards the station
+                self.traffic.append(dict(shipment=s,name=s['name'],phase='inbound',object=obj,
+                                         model=ships.trader_model(s['id']),facing=facing,up=up))
                 self.explosions.append(dict(position=obj[:3],remaining=.8,size=.5,jump=True))
             else: continue
             self.shown_shipments.add(s['id'])
@@ -7692,6 +8090,7 @@ class Game:
                     continue
                 step = [v/gap*TRADER_SPEED*dt for v in away]
             for i in range(3): obj[i] += step[i]
+            if 'facing' in t: self.steer_facing(t['facing'],t['up'],step,dt)
 
     def remove_trader(self, trader):
         self.traffic.remove(trader)
@@ -7700,7 +8099,7 @@ class Game:
     def trader_struck(self, trader, power):
         obj,s = trader['object'],trader['shipment']
         obj[3] -= power
-        lawful = not self.p.deep_space and PROFILES[self.p.system][0] not in ('Anarchy','Feudal')
+        lawful = not self.p.deep_space and PROFILES[self.p.system][0] not in ('Lawless','Wartorn')
         if obj[3] > 0:
             self.message = f'RADIO, trader {trader["name"]}: "Hold your fire! We are an unarmed freighter."'+(' Lawful space: destroying it means a 100 cr fine.' if lawful else '')
             self.radio('TRADER '+trader['name'].upper(),'urgency','Hold your fire! We are an unarmed freighter.')
@@ -7736,8 +8135,8 @@ class Game:
         self.explode(rock,.7)
         name = GOODS[good].lower()
         if weapon == 'mining': self.message = f'Asteroid cut cleanly: {count} pieces of {name}. Fly slowly within 260 m to scoop them.'
-        elif count: self.message = f'Asteroid shattered: the laser vaporised most of it, {count} piece{"s" if count > 1 else ""} of {name} left. A mining laser keeps more.'
-        else: self.message = f'Asteroid vaporised: the {weapon} laser left nothing to scoop. A mining laser cuts it cleanly.'
+        elif count: self.message = f'Asteroid shattered: the laser vaporised most of it, {count} piece{"s" if count > 1 else ""} of {name} left. An asteroid energy weapon keeps more.'
+        else: self.message = f'Asteroid vaporised: the {LASER_NAMES[weapon].lower()} left nothing to scoop. An asteroid energy weapon cuts it cleanly.'
 
     def laser_hit_depth(self, obj, kind):
         if kind == 'station':
@@ -7753,7 +8152,7 @@ class Game:
             vertices = [(-65,10),(-20,-15),(0,-5),(20,-15),(65,10),(0,28)]
         else:
             vertices = [(math.cos(i*2*math.pi/7)*42*(.85+.15*(i%3)),math.sin(i*2*math.pi/7)*42) for i in range(7)]
-        # Test the central laser ray against the same outline drawn on screen.
+        # Test the central laser ray against the ship's (or rock's) flat hit outline.
         x,y = (cockpit.VIEW_CENTRE[0]-sx)/scale,(cockpit.VIEW_CENTRE[1]-sy)/scale
         c,s = math.cos(angle),math.sin(angle)
         x,y = x*c+y*s,-x*s+y*c
@@ -8053,7 +8452,7 @@ class Game:
             groups=[('Flight', [('Thrust W',ord('w'),True),('Brake S',ord('s'),True),('Fire Spc',32,True),('Roll L',LEFT,True),('Pitch Up',UP,True),('Roll R',RIGHT,True),('Yaw Q',ord('q'),True),('Pitch Dn',DOWN,True),('Yaw E',ord('e'),True)]),
                 ('Nav',[('Nav 1',ord('g'),False),('Hold jump',ord('h'),True),('Cruise',ord('t'),False),('Station',ord('d'),False),('Planet',ord('p'),False),('Rocks',ord('a'),False),('Sun',ord('j'),False),('Scoop',ord('o'),False),('Guide ON' if self.course_assist else 'Guide',ord('y'),False)]),
                 ('Combat',[('Fire',32,True),('View F',ord('4'),False),('Laser',ord('v'),False),('Missile',ord('m'),False),('Mine',ord('b'),False),('Jammer',ord('z'),False),('Cloak',ord('k'),False),('Target',ord('5'),False)]),
-                ('Safety',[('Pay fine R' if self.can_settle() and not self.surrendering else 'Surrender R' if not self.p.deep_space and self.station_hostilities[self.p.system] and self.arrest_pending() and not self.surrendering else 'Radio R',ord('7'),False),('Hail N',ord('n'),False),('Autodock',ord('c'),False),('Skills',ord('8'),False),('Distress',ord('6'),False),('Fine ON' if self.fine_control else 'Fine ^F',ord('i'),False)])]
+                ('Safety',[('Pay fine R' if self.can_settle() and not self.surrendering else 'Surrender R' if not self.p.deep_space and self.station_hostilities[self.p.system] and self.arrest_pending() and not self.surrendering else 'Radio R',ord('7'),False),('Hail N',ord('n'),False),('Autopilot',ord('c'),False),('Skills',ord('8'),False),('Distress',ord('6'),False),('Fine ON' if self.fine_control else 'Fine ^F',ord('i'),False)])]
             # In the canopy's lower half, between the crosshair and the readout rows, clear of the side panels.
             ox,oy,ow,oh = CONTROLS_PANEL
             d.fill(ox,oy,ow,oh,(5,16,27));d.rect(ox,oy,ow,oh,GREEN)
@@ -8120,7 +8519,7 @@ class Game:
                 ('Steering','ARROWS + Q / E','LEFT/RIGHT roll, UP/DOWN pitch: roll then pull up to turn. Q/E rudder turns flat.'),
                 ('Look behind','F','Toggle rear view. Your course stays the same; a rear laser must be fitted.'),
                 ('Local navigation','CTRL + S / P / R / U','Select station, planet, rocks or sun. Gold dots and arrows show the bearing.'),
-                ('Pick up ore','O','Fit scoops. Below the nose, within 260m, speed 50 or less: 2 s a tonne. Cut rocks regrow in 30 min.')]),
+                ('Pick up ore','O','Fit an ECS. Below the nose, within 260m, speed 50 or less: 2 s a tonne. Cut rocks regrow in 30 min.')]),
             ('Nav',[
                 ('Navigation','1','Click a planet or empty point. Planet profiles show coordinates and services.'),
                 ('Search and lock','/  C  ENTER','Search by name, enter coordinates, then lock. Mouse map clicks also lock.'),
@@ -8130,21 +8529,21 @@ class Game:
                 ('Approach guidance','Y OR CTRL+G','Toggle centring on a local target ahead. You set speed and roll. Arrows cancel; H/T for galaxy travel.')]),
             ('Combat',[
                 ('Laser fire','HOLD SPACE','Fire the current view’s fitted laser. Rear view cannot use the front mount. X silences the alarm.'),
-                ('Choose a laser','V','Cycle front pulse, beam, military or mining lasers you have bought.'),
-                ('Missiles','M','Use one carried homing missile against the hostile contact. Replacements cost credits.'),
+                ('Choose a laser','V','Cycle the burst laser and any energy laser, high energy combat weapon or asteroid energy weapon you have bought.'),
+                ('Missiles','M','Use one carried AGM against the hostile contact. Replacements cost credits.'),
                 ('Proximity mines','L','Lay a mine astern. It arms after 1.5 seconds; its blast can hurt you too.'),
                 ('Electronic defence','J / K','Bought jammer disrupts targeting. Bought cloak burns fuel; firing reveals you.'),
                 ('Collision danger','KEEP CLEAR','Ships have solid collision hulls. A fast impact damages both ships.')]),
             ('Safety',[
                 ('Docking radio','R','Request station clearance before entry. Wanted pilots may be refused.'),
                 ('Manual docking','EITHER PORT, LOW SPEED','A station has a port at each end. Dock at either port within 30 degrees of its axis, at speed 1–25, centred in the slot.'),
-                ('Automatic docking','D','A fitted docking computer requests clearance, turns, lines you up with a port and guides the approach.'),
+                ('Automatic docking','D','A fitted autopilot flies you in from anywhere in a system, or from a jump if left on, and docks. Under attack, it switches off.'),
                 ('Emergency rescue','CTRL+E','Review rescue terms. Nearby stations claim 25%; distant salvagers negotiate.'),
                 ('Communicator','5 / CTRL+5','In flight 5 opens the Comms page; ENTER types. Docked, 5 toggles the side panel. Ctrl+5: full page, Distress tab.'),
                 ('Field engineering','8','Repair your ship or a disabled ship. Training improves odds. Failed repairs wait 30m, 60m, 120m…')]),
             ('Station',[
                 ('Market','UP/DOWN  B / S','Click goods or use arrows. Buy and sell prices differ; station stock is finite.'),
-                ('Outfitting','U','Buy modules and ammunition. Availability depends on local technology.'),
+                ('Outfitting','U','Buy modules and ammunition. Availability depends on local yard grade.'),
                 ('Fuel and service','2 then F / R','Fuel is a separate purchase. Service repairs damage and resets maintenance wear.'),
                 ('Bank and cargo bays','3 then B','Deposit money, store cargo, rent 40t or buy 100t of station capacity.'),
                 ('Earn fuel money','3 then J','Free dockside shifts pay 15-40 credits. Workshop practice earns engineering experience.'),
@@ -8176,8 +8575,8 @@ class Game:
         d.text(cockpit.TITLE_X,24,'ALPHA',GOLD)
         self.draw_ticker()
         location = 'In transit' if self.mode == 'hyperspace' else 'Deep space' if p.deep_space or self.mode == 'cruise' else SYSTEMS[p.system][0]
-        economy = '' if p.deep_space or self.mode in ('cruise','hyperspace') else f' / {SYSTEMS[p.system][1]} T{TECH[p.system]}'
-        # The top bar's right end: system, economy and tech, then credits, Crymto and kills (26 characters a line).
+        economy = '' if p.deep_space or self.mode in ('cruise','hyperspace') else f' / {SYSTEMS[p.system][1]} Y{TECH[p.system]}'
+        # The top bar's right end: system, economy and yard grade (Y5), then credits, Crymto and kills (26 characters a line).
         left,top,width,_ = cockpit.CONTENT
         room = (left+width-cockpit.STATUS_X)//cockpit.CHAR_W
         d.text(cockpit.STATUS_X,2,(location+economy)[:room],GOLD)
@@ -8205,7 +8604,7 @@ class Game:
         elif self.mode == 'prison':
             self.draw_prison()
         elif self.mode == 'rename':
-            d.text(35,85,'MENU / COMMANDER NAME',GOLD)
+            d.text(35,85,'MENU / SKIPPER NAME',GOLD)
             d.text(45,180,'Type a name (up to 24 characters), then press ENTER or click Save name.')
             d.rect(35,245,BOX_W,60,GREEN)
             if self.text_selection_all and self.text_selection_mode == 'rename': d.fill(40,250,max(20,len(p.name)*11+20),42,(20,65,70))
@@ -8215,7 +8614,7 @@ class Game:
             d.text(45,415,'ESC saves and closes.')
         elif self.mode == 'choose_name':
             card = self.pilot_card or {}
-            d.text(35,85,'STA REGISTRY / COMMANDER NAME',GOLD)
+            d.text(35,85,'STA REGISTRY / SKIPPER NAME',GOLD)
             d.text(45,180,f'Choose the name other pilots see. Until then you are Pilot {card.get("number","")}.')
             d.rect(35,245,BOX_W,60,GREEN)
             if self.text_selection_all and self.text_selection_mode == 'choose_name': d.fill(40,250,max(20,len(self.choose_name_text)*11+20),42,(20,65,70))
@@ -8313,21 +8712,21 @@ class Game:
                 d.text(35,525,line,WANTED_COLOR if line.split(':')[0].isupper() else (135,175,185))
                 d.text(500,590,'STOCK:',(135,175,185)); d.text(575,590,'wanted',WANTED_COLOR); d.text(655,590,'surplus',SURPLUS_COLOR)
             else:
-                d.text(35,85,f'SHIP OUTFITTING / LOCAL TECH {TECH[p.system]} / U market')
+                d.text(35,85,f'SHIP OUTFITTING / LOCAL YARD GRADE {TECH[p.system]} / U market')
                 start = max(0,min(self.shop_selected-4,len(EQUIPMENT)-8))
                 for i in range(start,min(start+8,len(EQUIPMENT))):
                     key,label,cost,tech,desc = EQUIPMENT[i]
-                    state = f'FITTED, SELLS {p.resale_value(i)}' if key in p.equipment else f'NEEDS TECH {tech}' if tech>TECH[p.system] else 'AVAILABLE'
-                    if key in ('missile','mine'): state += f' / {p.missiles if key == "missile" else p.mines}/4 ABOARD'
-                    d.text(35,135+(i-start)*37,f'{">" if i==self.shop_selected else " "} {label:<23} {cost:>4} cr  {state}',GOLD if i==self.shop_selected else GREEN)
+                    state = f'FITTED, SELLS {p.resale_value(i)}' if key in p.equipment else f'NEEDS YARD {tech}' if tech>TECH[p.system] else 'AVAILABLE'
+                    if key in ('missile','mine'): state += f' / {p.missiles}/{MAX_MISSILES} ABOARD' if key == 'missile' else f' / {p.mines}/{MAX_MINES} ABOARD'
+                    d.text(35,135+(i-start)*37,f'{">" if i==self.shop_selected else " "} {label:<34} {cost:>4} cr  {state}',GOLD if i==self.shop_selected else GREEN)
                 d.text(35,455,EQUIPMENT[self.shop_selected][4],GOLD)
                 item,label,cost,required,_ = EQUIPMENT[self.shop_selected]
-                d.text(35,490,f'Selected: {label} / needs tech {required} / local tech {TECH[p.system]}',GOLD if required <= TECH[p.system] else RED)
+                d.text(35,490,f'Selected: {label} / needs yard grade {required} / local yard grade {TECH[p.system]}',GOLD if required <= TECH[p.system] else RED)
                 d.text(35,520,'B or ENTER buys; S sells for half price.')
-                d.text(35,545,'The pulse laser is built in and cannot be sold.',(135,175,185))
+                d.text(35,545,'The burst laser is built in and cannot be sold.',(135,175,185))
             wanted = self.wanted_level()
-            for i,t in enumerate([] if self.comms_shown() else ['COMMANDER STATUS',f'Cmdr  {self.commander_name()[:16]}',f'Rank  {p.rank}',f'Wanted {"*"*wanted}{"-"*(5-wanted)} {wanted}/5',f'Cargo {sum(p.cargo)}/{p.capacity} t',f'Fuel  {p.fuel:.2f}/7',f'Hull  {p.hull:.0f}%',f'Refill {p.fuel_cost()} cr',f'Service {p.service_cost()} cr',f'Mines {p.mines}/4',f'Fine {p.fine} cr',f'Wear {p.maintenance:.0f}%',f'Eng. {p.engineering_level}/5']): d.text(STATUS_PANEL_X,130+i*35,t,RED if i == 3 and wanted else GREEN)
-            if p.edited and not self.comms_shown(): d.text(STATUS_PANEL_X,130+13*35,'This save was edited',RED); d.text(STATUS_PANEL_X,130+14*35,'outside the game.',RED)
+            for i,t in enumerate([] if self.comms_shown() else ['SKIPPER STATUS',f'Skpr  {self.commander_name()[:16]}',f'Rank  {p.rank}',f'Wanted {"*"*wanted}{"-"*(5-wanted)} {wanted}/5',f'Cargo {sum(p.cargo)}/{p.capacity} t',f'Pods  {POD_COUNT} × {EXTENDED_POD_TONNES if "cargo" in p.equipment else POD_TONNES} t',f'Fuel  {tank_short(p.fuel)}',f'Hull  {p.hull:.0f}%',f'Refill {p.fuel_cost()} cr',f'Service {p.service_cost()} cr',f'Mines {p.mines}/{MAX_MINES}',f'Fine {p.fine} cr',f'Wear {p.maintenance:.0f}%',f'Eng. {p.engineering_level}/5']): d.text(STATUS_PANEL_X,130+i*STATUS_ROW,t,RED if i == 3 and wanted else GREEN)
+            if p.edited and not self.comms_shown(): d.text(STATUS_PANEL_X,130+14*STATUS_ROW,'This save was edited',RED); d.text(STATUS_PANEL_X,130+15*STATUS_ROW,'outside the game.',RED)
             if self.mode == 'market' and p.charter: d.text(35,562,f'NEWCOMER CHARTER: +50% on sale profit here (max {CHARTER_CAP}/t) to Operator.',(120,220,140))
             elif self.mode == 'market': d.text(35,562,'Ship fuel, service, fitting and engineering: open VMS above.')
             d.text(35,590,'3 Money / station jobs   2 VMS   1 Nav')
@@ -8374,11 +8773,11 @@ class Game:
         """The cockpit's status line, as (text, colour, priority) pieces; the lowest priority goes first when short
         of room."""
         p = self.p
-        laser = ('REAR '+p.rear_laser.upper()+' LASER' if 'rear' in p.equipment else 'REAR UNARMED') if self.rear_view else p.laser.upper()+' LASER'
+        laser = ('REAR '+LASER_STRIP[p.rear_laser] if 'rear' in p.equipment else 'REAR UNARMED') if self.rear_view else LASER_STRIP[p.laser]
         # In flight the speed is in the canopy (draw_view), where the pilot is looking.
         items = [] if self.mode == 'flight' else [(f'SPEED {self.speed:.0f}',GREEN,9)]
-        items += [(f'FUEL {p.fuel:.2f}'+(' LOW' if p.fuel < 1 else ''),RED if p.fuel < 1 else GREEN,9),
-                 (laser,GREEN,9),(f'MISSILES {p.missiles}',GREEN,8),(f'MINES {p.mines}',GREEN,5)]
+        items += [(f'FUEL {kilolitres(p.fuel)} L'+(' LOW' if p.fuel < 1 else ''),RED if p.fuel < 1 else GREEN,9),
+                 (laser,GREEN,9),(f'AGM {p.missiles}',GREEN,8),(f'MINES {p.mines}',GREEN,5)]
         if self.cloaked or self.jamming: items.append(('CLOAKED' if self.cloaked else 'JAMMING',GOLD,7))
         if self.mode == 'flight' and self.in_patrol_zone(): items.append(('PATROL ZONE',GOLD,4))
         if p.waypoint:
@@ -8445,14 +8844,25 @@ class Game:
         scene += [(depth(m),m,'mine') for m in self.mine_objects]
         scene += [(depth(r),r,'asteroid') for r in self.asteroids]
         scene += [(depth(f),f,'ore') for f in self.fragments]
+        # Ships carry (model, facing, up); one without them flies the placeholder heading: away from you, upright.
+        ahead,upright = (0.,0.,1.),(0.,-1.,0.)
         for player in self.other_players.values():
-            scene.append((depth(player['object']),player['object'],'player'))
+            scene.append((depth(player['object']),player['object'],'player',ships.PILOT,player.get('facing') or ahead,player.get('up') or upright))
             projected = self.project(player['object'])
             if projected: self.view_labels.append((player['name'],projected[0]-60,projected[1]-35,(140,185,255)))
-        scene += [(depth(t['object']),t['object'],'trader') for t in self.traffic]
-        if self.enemy: scene.append((depth(self.enemy),self.enemy,self.enemy_kind))
-        if self.disabled_ship: scene.append((depth(self.disabled_ship['object']),self.disabled_ship['object'],'disabled'))
-        for _,obj,kind in sorted(scene,key=lambda item:-item[0]): self.object(obj,kind)
+        for t in self.traffic:
+            scene.append((depth(t['object']),t['object'],'trader',t.get('model') or ships.trader_model((t.get('shipment') or {}).get('id')),
+                          t.get('facing') or ahead,t.get('up') or upright))
+        if self.enemy:
+            scene.append((depth(self.enemy),self.enemy,self.enemy_kind,self.enemy_model or (ships.POLICE if self.enemy_kind == 'police' else ships.PILOT),
+                          self.enemy_facing or ahead,self.enemy_up or upright))
+        if self.disabled_ship:
+            ship = self.disabled_ship
+            scene.append((depth(ship['object']),ship['object'],'disabled',ship.get('model') or ships.PILOT,ship.get('facing') or ahead,ship.get('up') or upright))
+        for item in sorted(scene,key=lambda item:-item[0]):
+            if len(item) == 6: self.draw_ship(*item[1:])
+            elif len(item) == 4: self.draw_ship(item[1],item[2],item[3],ahead,upright)
+            else: self.object(item[1],item[2])
         for label in self.view_labels: self.view_label(*label)
         for m in self.missiles_in_flight:
             point = self.project(m['position'])
@@ -8521,7 +8931,8 @@ class Game:
         else:
             beacon = f'{label.replace("STATION / ","")[:16]} X{x*c+y*s:+.0f} Y{-x*s+y*c:+.0f} Z{z:+.0f}'
         error = math.degrees(self.slot_error())
-        slot = 'DRIVE DISABLED' if self.broken_down else 'AUTODOCK' if self.autodock else f'SLOT {error:+.0f}/14deg '+('CLEAR' if self.dock_clearance else 'R radio')
+        slot = ('DRIVE DISABLED' if self.broken_down else self.autopilot_status() if self.autodock
+                else 'AUTOPILOT ARMED' if self.autopilot_armed else f'SLOT {error:+.0f}/14deg '+('CLEAR' if self.dock_clearance else 'R radio'))
         d.text(right-12-len(slot)*11,bottom-26,slot,RED if self.broken_down else GOLD)
         d.text(left+12,bottom-26,beacon[:room-len(slot)-2],GREEN)
         guidance = (('GUIDANCE Y LINING UP  ' if self.guidance_lining_up() else 'GUIDANCE Y  ') if self.course_assist else '')+('FINE ^F' if self.fine_control else '')
@@ -8569,7 +8980,7 @@ class Game:
         remaining = max(0,trip['duration']-trip['elapsed'])
         d.text(cx-104,top+70,'INTERSTELLAR CRUISE',GREEN)
         d.text(left+40,top+120,('Destination: '+trip['destination']['name'])[:54])
-        d.text(left+40,top+160,f'ETA {int(remaining//60)}m {int(remaining%60)}s    FUEL {p.fuel:.2f}/7')
+        d.text(left+40,top+160,f'ETA {int(remaining//60)}m {int(remaining%60)}s    FUEL {tank_text(p.fuel)}')
         d.text(left+40,top+200,f'Coordinates {p.position[0]:.3f}, {p.position[1]:.3f}')
         d.rect(left+26,top+250,600,25)
         progress = min(1,trip['elapsed']/trip['duration'])
@@ -8662,31 +9073,20 @@ class Game:
         bars = (('HULL',f'{p.hull:.0f}%',p.hull/100,GREEN if p.hull >= 25 else RED),
                 ('SHIELDS',f'{self.shield:.0f}%',self.shield/100,GREEN if self.shield >= 25 else GOLD),
                 ('HEAT',f'{self.heat:.0f}%',self.heat/100,RED if self.heat >= 90 else GOLD if self.heat >= 70 else GREEN),
-                ('FUEL',f'{p.fuel:.1f} / 7 t',p.fuel/7,RED if p.fuel < 1 else GREEN))
+                ('FUEL',tank_short(p.fuel),p.fuel/TANK,RED if p.fuel < 1 else GREEN))
         for i,(label,value,fraction,color) in enumerate(bars):
             y = y0+74+i*34
             d.text(x0+8,y,label,GREEN)
             d.text(x0+w-8-len(value)*11,y,value,color)
             self.panel_bar(x0+8,y+22,w-16,fraction,color)
 
-    # The player's hauler from above, nose up: (x, y) points round its centre and the edges between them.
-    HAULER = ((0,-54),(-10,-42),(10,-42),(-18,-30),(18,-30),(-18,38),(18,38),
-              (-42,-14),(-18,-14),(-42,24),(-18,24),(18,-14),(42,-14),(18,24),(42,24),
-              (-14,38),(-14,50),(-4,50),(-4,38),(4,38),(4,50),(14,50),(14,38),
-              (-18,-6),(18,-6),(-18,10),(18,10))
-    HAULER_EDGES = ((0,1),(0,2),(1,2),(1,3),(2,4),(3,4),(3,5),(4,6),(5,6),
-                    (7,8),(7,9),(9,10),(8,10),(11,12),(12,14),(13,14),(11,13),
-                    (15,16),(16,17),(17,18),(19,20),(20,21),(21,22),(23,24),(25,26))
-
     def draw_ship_icon(self):
         d = self.d
         x0,y0,w,h = cockpit.SHIP_ICON
         self.panel_box(cockpit.SHIP_ICON)
         cx,cy = x0+w//2,y0+68
-        for a,b in self.HAULER_EDGES:
-            (ax,ay),(bx,by) = self.HAULER[a],self.HAULER[b]
-            color = GOLD if a >= 15 and a <= 22 else GREEN
-            d.line(cx+ax,cy+ay,cx+bx,cy+by,color)
+        for (ax,ay),(bx,by) in ships.top_view('kestrel',w-40,120):
+            d.line(round(cx+ax),round(cy+ay),round(cx+bx),round(cy+by),GREEN)
         # Corner brackets round the outline.
         for x,dx in ((x0+10,1),(x0+w-10,-1)):
             for y,dy in ((y0+8,1),(y0+130,-1)):
@@ -8701,7 +9101,7 @@ class Game:
         ready = 1-min(1,max(0,self.cooldown)/delay)
         armed = not self.rear_view or 'rear' in p.equipment
         return [('SPD',min(1,abs(self.speed)/TOP_SPEED),GREEN),
-                ('FUEL',p.fuel/7,RED if p.fuel < 1 else GREEN),
+                ('FUEL',p.fuel/TANK,RED if p.fuel < 1 else GREEN),
                 ('HEAT',min(1,self.heat/100),RED if self.heat >= 90 else GOLD if self.heat >= 70 else GREEN),
                 ('SHLD',self.shield/100,GREEN if self.shield >= 25 else GOLD),
                 ('WPN',ready if armed else 0,RED if 'laser' in self.faults else GREEN if ready >= 1 else GOLD)]
@@ -8793,7 +9193,9 @@ class Game:
         tolerance = math.degrees(DOCK_ROLL_TOLERANCE)
         rows.append((f'ROLL {r["roll_deg"]:+.0f}° / {tolerance:.0f}',GREEN if abs(r['roll_deg']) <= tolerance else GOLD))
         speed = r['speed']
-        rows.append((f'SPEED {speed:.0f} / {r["limit"]}',RED if speed > r['limit'] else GREEN if speed > 0 else DIM))
+        # Red only where the limit matters: near the port, or on the Autopilot's final approach.
+        close = r['range'] <= 300 or self.autopilot_stage() == 'docking'
+        rows.append((f'SPEED {speed:.0f} / {r["limit"]}',RED if speed > r['limit'] and close else GREEN if speed > 0 else DIM))
         for i,(text,color) in enumerate(rows): self.page_row(x,top+i*23,column,text,color)
         # The approach corridor: the port on the left, 2.5 km out on the right, the cone round the port's axis.
         port_x,right,mid,half = self.corridor_geometry()
@@ -8840,7 +9242,7 @@ class Game:
             self.page_row(x,top+22,width,'NUMBER '+(number or 'none'),GREEN if number else DIM)
             if number is None: return
             x0,y0,w,h = cockpit.MIDDLE
-            for i,(text,color) in enumerate(self.history_lines(number,(y0+h-6-(top+44))//22,name)):
+            for i,(text,color) in enumerate(self.history_lines(number,(y0+h-6-(top+44))//22,name,width//11)):
                 self.page_row(x,top+44+i*22,width,text,color)
             if getattr(self,'remote_save',None) is not None:
                 label = 'Report name Ctrl+T'
@@ -8915,11 +9317,11 @@ class Game:
         if w:
             self.page_row(x,top,width,f'COURSE {w["name"]}  {galactic_distance(p.position,w["position"]):.2f} LY',GOLD)
             fuel = self.jump_fuel_to(w)
-            self.page_row(x,top+23,width,f'JUMP FUEL {fuel:.2f} / {p.fuel:.2f} aboard'+('  NOT ENOUGH' if fuel > p.fuel else ''),
+            self.page_row(x,top+23,width,f'JUMP FUEL {litres(fuel)[:-2]} / {litres(p.fuel)} aboard'+('  NOT ENOUGH' if fuel > p.fuel else ''),
                           RED if fuel > p.fuel else GREEN)
         else:
             self.page_row(x,top,width,'No course. 1 Nav picks a destination.',DIM)
-            self.page_row(x,top+23,width,f'FUEL {p.fuel:.2f} / 7',GREEN)
+            self.page_row(x,top+23,width,f'FUEL {tank_text(p.fuel)}',GREEN)
         if self.jump_charge:
             count = max(1,math.ceil(3-self.jump_charge['held']))
             self.page_row(x,top+52,width,f'HYPERSPACE IN {count}... to {self.jump_charge["destination"]["name"]}',GOLD)
@@ -8996,8 +9398,8 @@ class Game:
         weapon = p.rear_laser if self.rear_view else p.laser
         ready = dict((label,fraction) for label,fraction,_ in self.gauge_values())['WPN']
         state = 'FAULT' if 'laser' in self.faults else 'READY' if ready >= 1 else 'COOLING'
-        self.page_row(x,top+23,width,f'{"REAR " if self.rear_view else ""}{weapon.upper()} LASER {state}',RED if state == 'FAULT' else GREEN)
-        self.page_row(x,top+46,width,f'MISSILES {p.missiles}   MINES {p.mines}',GREEN)
+        self.page_row(x,top+23,width,f'{"REAR " if self.rear_view else ""}{LASER_STRIP[weapon]} {state}',RED if state == 'FAULT' else GREEN)
+        self.page_row(x,top+46,width,f'AGM {p.missiles}   MINES {p.mines}',GREEN)
         status = self.target_status()
         if self.enemy is not None:
             full = ENEMY_STRENGTH.get(self.enemy_kind,6)
@@ -9042,37 +9444,157 @@ class Game:
         for i,line in enumerate(lines): d.text(x0+8,y0+68+i*21,line,DIM)
 
     def object(self,obj,kind):
+        """A round body (sun, planet, asteroid, mine, ore) as a filled outline, or the station. Ships: draw_ship."""
         if kind == 'station': return self.draw_station()
         projected = self.project(obj)
         if projected is None: return
         sx,sy,scale = projected
         if sx < -800 or sx > W+800 or sy < -800 or sy > H+800: return
-        color = GREEN
         angle = self.roll if self.rear_view else -self.roll
-        if kind == 'trader':
-            # A boxy freighter: cargo pod with stubby fins.
-            points = [(-45,-14),(45,-14),(45,14),(-45,14),(-60,0),(60,0),(0,-24)]
-            edges = [(0,1),(1,2),(2,3),(3,0),(0,4),(3,4),(1,5),(2,5),(0,6),(1,6)]
-            outline = (4,0,6,1,5,2,3)
-            color = (205,205,215)
-        elif kind in ('pirate','police','disabled','player'):
-            points = [(-65,10),(-20,-15),(0,-5),(20,-15),(65,10),(0,28)]
-            edges = [(0,1),(1,2),(2,3),(3,4),(4,5),(5,0),(0,4),(2,5)]
-            outline = (0,1,2,3,4,5)
-            color = GOLD if kind == 'disabled' else RED if kind == 'pirate' else (120,170,255)
-        else:
-            count = 24 if kind in ('sun','planet') else 7 if kind == 'asteroid' else 6 if kind == 'mine' else 4
-            radius = 220 if kind == 'sun' else self.planet_radius if kind == 'planet' else 42 if kind == 'asteroid' else 9 if kind == 'mine' else 7
-            points = [(math.cos(i*2*math.pi/count)*radius*(1 if kind != 'asteroid' else 0.85+0.15*(i%3)), math.sin(i*2*math.pi/count)*radius) for i in range(count)]
-            edges = [(i,(i+1)%count) for i in range(count)]
-            outline = range(count)
-            color = RED if kind == 'mine' else (90,150,220) if kind == 'planet' else GOLD if kind in ('sun','asteroid') else (150,190,255)
+        count = 24 if kind in ('sun','planet') else 7 if kind == 'asteroid' else 6 if kind == 'mine' else 4
+        radius = 220 if kind == 'sun' else self.planet_radius if kind == 'planet' else 42 if kind == 'asteroid' else 9 if kind == 'mine' else 7
+        points = [(math.cos(i*2*math.pi/count)*radius*(1 if kind != 'asteroid' else 0.85+0.15*(i%3)), math.sin(i*2*math.pi/count)*radius) for i in range(count)]
+        edges = [(i,(i+1)%count) for i in range(count)]
+        color = RED if kind == 'mine' else (90,150,220) if kind == 'planet' else GOLD if kind in ('sun','asteroid') else (150,190,255)
         c,s = math.cos(angle),math.sin(angle)
         points = [(sx+(x*c-y*s)*scale,sy+(x*s+y*c)*scale) for x,y in points]
-        self.d.polygon([points[i] for i in outline],SPACE,centre=(sx,sy))
+        self.d.polygon(points,SPACE,centre=(sx,sy))
         for a,b in edges: self.d.line(*points[a],*points[b],color)
         if abs(obj[2]) > 150:
             self.view_labels.append((kind.upper(),sx-65,sy+110*scale,color))
+
+    SHIP_COLOURS = {'trader': (205,205,215), 'pirate': RED, 'disabled': GOLD}   # police and other pilots: blue
+    FAR_MARK = 14   # px: a ship shorter than this on screen is one line nose to tail
+    LOD_SIZE = 76   # px: a ship less than this across on screen (its larger side) leaves out its smallest faces:
+    LOD_SHARE = .002   # those under this share of its size squared (11.6 px² at 76 px across, 0.6 px² at 17)
+
+    def draw_ship(self, obj, kind, name, facing, up):
+        """A ship of model `name` at camera-relative centre obj[:3], nose along `facing`, top along `up`: an opaque
+        wireframe solid in its kind's colour, depth-shaded; one line nose to tail when it is under FAR_MARK px long."""
+        colour = self.SHIP_COLOURS.get(kind,(120,170,255))
+        centre = list(obj[:3])
+        near = 6.
+        half,ez = ships.model(name).length/2,ships.basis(facing,up)[2]
+        nose,tail = ([c+k*e for c,e in zip(centre,ez)] for k in (half,-half))
+        # screen_length is 0.0 with an end behind the camera (then the model is drawn, cut) and also head-on, where
+        # the ship still shows its cross-section: so it is far only when its broadside size there is small too.
+        middle = self.project(centre)
+        length = ships.screen_length(name,centre,facing,up,self.project)
+        far = (self.project(nose) is not None and self.project(tail) is not None and middle is not None
+               and max(length,2*half*middle[2]) < self.FAR_MARK)
+        if far:
+            self.view_segment(nose,tail,colour,0.,0.,near)
+        else:
+            # Camera space (x right, y down the screen, z ahead) is right-handed like the model's frame: a rotation.
+            # Level of detail: a ship under LOD_SIZE px across leaves out its smallest faces. Its size there is at
+            # least its nose-to-tail length over root 2, so only a ship shorter than that is measured.
+            small = (self.project,self.LOD_SIZE,self.LOD_SHARE) if length < self.LOD_SIZE*1.5 else None
+            items = ships.paint(name,centre,facing,up,rear=self.rear_view,near=near,once=True,lod=small)
+            sign,pts = (-1. if self.rear_view else 1.),items.points
+            used = {i for op in items.order for i in (op[1] if op[0] == 'face' else op[1:3])}
+            front = [sign*pts[i][2] for i in used if sign*pts[i][2] > near]
+            lo,hi = (min(front),max(front)) if front else (0.,0.)
+            self.draw_solid(items,colour,lo,hi,near)
+        projected = self.project(obj)
+        if projected and abs(obj[2]) > 150 and -800 <= projected[0] <= W+800 and -800 <= projected[1] <= H+800:
+            sx,sy,scale = projected
+            self.view_labels.append((kind.upper(),sx-65,sy+110*scale,colour))
+
+    def draw_solid(self, items, colour, lo, hi, near=6.):
+        """Painted items in order: ('face', points) filled with SPACE, ('line', a, b) in `colour` (or the item's own
+        fourth element), depth-shaded from full at `lo` to 35 % at `hi`; cut at the near plane, clipped to the view."""
+        # view_fill and view_segment inlined, each point's depth and projection worked out once (points shared by
+        # several items are the same objects; a ships.Painted list carries them by index): the same calls with the
+        # same numbers, made faster.
+        rear = self.rear_view
+        roll = -self.roll if rear else self.roll
+        c,s = math.cos(roll),math.sin(roll)
+        cx,cy = cockpit.VIEW_CENTRE
+        left,top,width,height = cockpit.VIEW
+        right,bottom = left+width,top+height
+        span,floor = hi-lo,1.0-stations.DIM_FLOOR
+        edge,front = max(near+.01,5.),max(near,5.)   # past these every point is in front and projects
+        line,polygon,cache = self.d.line,self.d.polygon,{}
+        def view(q):   # (depth, sx, sy), sx None behind the camera
+            x,y,z = q[0],q[1],q[2]
+            if rear: x,z = -x,-z
+            if z <= 5: return (z,None,None)
+            scale = cockpit.VIEW_SCALE/z
+            return (z,cx+(x*c+y*s)*scale,cy+(-x*s+y*c)*scale)
+        def seen(q):   # view(q), cached by the point's identity
+            got = cache.get(id(q))
+            if got is None: got = cache[id(q)] = view(q)
+            return got
+        order = getattr(items,'order',None)
+        if order is not None and len(order) == len(items):
+            points,scale = items.points,cockpit.VIEW_SCALE
+            depth = [-z for _,_,z in points] if rear else [z for _,_,z in points]
+            if depth and min(depth) > edge:   # the whole ship in front: no cuts, every point on screen; view() inlined
+                if rear: at = [(cx+(-x*c+y*s)*(scale/-z),cy+(x*s+y*c)*(scale/-z)) for x,y,z in points]
+                else: at = [(cx+(x*c+y*s)*(scale/z),cy+(-x*s+y*c)*(scale/z)) for x,y,z in points]
+                inside = [left <= sx <= right and top <= sy <= bottom for sx,sy in at]
+                for op in order:
+                    if op[0] == 'face':
+                        if len(op[1]) >= 3: polygon([at[i] for i in op[1]],SPACE)
+                        continue
+                    i,j = op[1],op[2]
+                    (xa,ya),(xb,yb) = at[i],at[j]
+                    if inside[i] and inside[j]: got = xa,ya,xa+(xb-xa),ya+(yb-ya)
+                    else:
+                        got = clip_line(xa,ya,xb,yb,left,top,right,bottom)
+                        if not got: continue
+                    if span <= 0: line(*got,tuple(colour)); continue
+                    t = ((depth[i]+depth[j])/2-lo)/span   # stations.depth_colour, inlined
+                    k = 1.0-floor*(0.0 if not t > 0.0 else t if t < 1.0 else 1.0)
+                    line(*got,(int(colour[0]*k+.5),int(colour[1]*k+.5),int(colour[2]*k+.5)))
+                return
+            shown = [view(q) for q in points]
+            steps = ((item,[shown[i] for i in op[1]] if op[0] == 'face' else (shown[op[1]],shown[op[2]]))
+                     for op,item in zip(order,items))
+        else:
+            steps = ((item,[seen(q) for q in item[1]] if item[0] == 'face' else (seen(item[1]),seen(item[2])))
+                     for item in items if item[0] in ('face','line'))
+        for item,ends in steps:
+            if item[0] == 'face':
+                if all(z > edge for z,_,_ in ends):
+                    if len(ends) >= 3: polygon([(sx,sy) for _,sx,sy in ends],SPACE)
+                else: self.view_fill(item[1],SPACE,near)
+                continue
+            (za,xa,ya),(zb,xb,yb) = ends
+            base = item[3] if len(item) > 3 else colour
+            if za <= front or zb <= front:
+                self.view_segment(item[1],item[2],base,lo,hi,near); continue
+            if left <= xa <= right and top <= ya <= bottom and left <= xb <= right and top <= yb <= bottom:
+                got = xa,ya,xa+(xb-xa),ya+(yb-ya)   # clip_line's answer for a segment inside the view
+            else:
+                got = clip_line(xa,ya,xb,yb,left,top,right,bottom)
+                if not got: continue
+            if span <= 0: line(*got,tuple(base)); continue
+            t = min(1.0,max(0.0,((za+zb)/2-lo)/span))   # stations.depth_colour, inlined
+            k = 1.0-floor*t
+            line(*got,(int(base[0]*k+.5),int(base[1]*k+.5),int(base[2]*k+.5)))
+
+    def view_segment(self, a, b, color, lo, hi, near=6.):
+        """A camera-relative line, cut where it crosses the near plane and clipped to the view, shaded by its depth."""
+        depth = (lambda q: -q[2]) if self.rear_view else (lambda q: q[2])
+        left,top,width,height = cockpit.VIEW
+        za,zb = depth(a),depth(b)
+        if za <= near and zb <= near: return
+        if za <= near or zb <= near:
+            t = (near-za)/(zb-za)
+            cut = [p+t*(q-p) for p,q in zip(a,b)]
+            a,b = (cut,b) if za <= near else (a,cut)
+        pa,pb = self.project(a),self.project(b)
+        if pa is None or pb is None: return
+        line = clip_line(pa[0],pa[1],pb[0],pb[1],left,top,left+width,top+height)
+        if line: self.d.line(*line,stations.depth_colour(color,(max(za,near)+max(zb,near))/2,lo,hi))
+
+    def view_fill(self, points, colour, near=6.):
+        """A camera-relative polygon filled in `colour`, cut at the near plane."""
+        depth = (lambda q: -q[2]) if self.rear_view else (lambda q: q[2])
+        shown = [self.project(q) for q in clip_polygon_near(points,depth,near+.01)]
+        shown = [(sx,sy) for sx,sy,_ in (q for q in shown if q)]
+        if len(shown) >= 3: self.d.polygon(shown,colour)
 
     def draw_station(self):
         """The station as a solid from its model: faces turned towards the camera filled with space, far first, each
@@ -9089,33 +9611,21 @@ class Game:
         depth = (lambda q: -q[2]) if self.rear_view else (lambda q: q[2])
         left,top,width,height = cockpit.VIEW
         right,bottom = left+width,top+height
-        def segment(a,b,color,lo,hi):
-            za,zb = depth(a),depth(b)
-            if za <= near and zb <= near: return
-            if za <= near or zb <= near:
-                t = (near-za)/(zb-za)
-                cut = [p+t*(q-p) for p,q in zip(a,b)]
-                a,b = (cut,b) if za <= near else (a,cut)
-            pa,pb = self.project(a),self.project(b)
-            if pa is None or pb is None: return
-            line = clip_line(pa[0],pa[1],pb[0],pb[1],left,top,right,bottom)
-            if line: self.d.line(*line,stations.depth_colour(color,(max(za,near)+max(zb,near))/2,lo,hi))
-        def fill(points,colour):
-            shown = [self.project(q) for q in clip_polygon_near(points,depth,near+.01)]
-            shown = [(sx,sy) for sx,sy,_ in (q for q in shown if q)]
-            if len(shown) >= 3: self.d.polygon(shown,colour)
         # Depth shading: the nearest vertex in front of the camera is full brightness, the farthest 35 %.
         front = [z for z in (depth([centre[i]+x*ex[i]+y*ey[i]+z*ez[i] for i in range(3)]) for x,y,z in verts) if z > near]
         lo,hi = (min(front),max(front)) if front else (0.,0.)
         box = self.approach_box()   # in its port's plane: drawn on its slot, under the port's own gold lines
         box_z = 0. if self.active_port() == 'A' else stations.LENGTH
+        run = []   # faces and lines between slots, drawn together through draw_solid
         for item in stations.paint(kind,centre,axis,self.station_angle,rear=self.rear_view,near=near):
-            if item[0] == 'face': fill(item[1],SPACE)
-            elif item[0] == 'slot':
-                fill(item[1],STATION_SLOT)
+            if item[0] == 'slot':
+                self.draw_solid(run,None,lo,hi,near); run = []
+                self.view_fill(item[1],STATION_SLOT,near)
                 if box and item[2] == box_z:
-                    for a,b in zip(box,box[1:]+box[:1]): segment(a,b,APPROACH_BOX,0.,0.)
-            else: segment(item[1],item[2],GOLD if item[3] else GREEN,lo,hi)
+                    for a,b in zip(box,box[1:]+box[:1]): self.view_segment(a,b,APPROACH_BOX,0.,0.,near)
+            elif item[0] == 'face': run.append(item)
+            else: run.append(('line',item[1],item[2],GOLD if item[3] else GREEN))
+        self.draw_solid(run,None,lo,hi,near)
         middle = [c+a*stations.LENGTH/2 for c,a in zip(centre,axis)]
         distance = math.sqrt(sum(v*v for v in middle))
         shown = self.project(middle)

@@ -11,7 +11,7 @@ FACES = ('neutral', 'speaking', 'pleased', 'concerned', 'intrigued')
 LINES = {
     # Once per pilot, after Herbert's guided trip ends.
     'alpha': (
-        "Morrow, Proving Ground. This galaxy is still on trial, Commander. If it misbehaves, press Ctrl+0. "
+        "Morrow, Proving Ground. This galaxy is still on trial, Skipper. If it misbehaves, press Ctrl+0. "
         "It comes straight to me, and I read every one.",
     ),
 }

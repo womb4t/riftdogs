@@ -60,7 +60,7 @@ def install_mac_app(target):
 
 # Everything the installed game runs from. test_deploy checks every module the game imports is listed here.
 GAME_FILES = ('riftdogs.py', 'startup.py', 'presence.py', 'market.py', 'economy.py', 'council.py', 'licence.py', 'qr.py', 'tally.py',
-              'save_sync.py', 'seal.py', 'update.py', 'payments.py', 'comms.py', 'names.py', 'checkin.py', 'examiner.py', 'morrow.py', 'herbert.py', 'herbert_view.py', 'stations.py', 'cockpit.py', 'LICENSE', 'README.md', 'PRIVACY.md', 'TERMS.md')
+              'save_sync.py', 'seal.py', 'update.py', 'payments.py', 'comms.py', 'names.py', 'checkin.py', 'examiner.py', 'morrow.py', 'ships.py', 'herbert.py', 'herbert_view.py', 'stations.py', 'cockpit.py', 'LICENSE', 'README.md', 'PRIVACY.md', 'TERMS.md')
 
 
 def recorded_source(source):

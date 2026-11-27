@@ -10,7 +10,7 @@ Whenever the game is installed and your computer is online, it checks in with Ri
 - **Proof that it is this install.** The first time it checks in, the Riftdogs server gives this computer an **install ID** (a random number) and a **secret install key**, which the game keeps in a private file here. The server keeps only a scrambled form of the key, which can't be turned back into it.
 - **The game version** and **your computer's platform** (for example linux or darwin). Nothing else about your computer.
 - **Bug reports and suggestions** you log in the game, when this computer is next online. They carry your text, the game version, platform, screen and star system, and no save file.
-- **Your Riftdogs login, if this computer has one**, so the server can link this install to your commander: then your place in the queue counts as taken and your bug reports show your commander name.
+- **Your Riftdogs login, if this computer has one**, so the server can link this install to your skipper: then your place in the queue counts as taken and your bug reports show your skipper name.
 
 Riftdogs sends back your place in the queue, whether an online place is ready for you, and whether an update is needed or recommended. It can also send **messages** to your copy of the game. They appear on the start screen under FROM RIFTDOGS and in the communicator log; the game keeps them on this computer, with which ones you have read. **Each message is deleted from the server once it expires, at most 90 days after it is sent.**
 
@@ -27,12 +27,12 @@ When you play online, the server you joined keeps the following.
 
 ## What is stored, and why
 
-- **Your commander name and pilot number**, so other pilots can see you and the server knows whose save is whose. See "Your commander name" below.
+- **Your skipper name and pilot number**, so other pilots can see you and the server knows whose save is whose. See "Your skipper name" below.
 - **Your private login**, kept on the server only in a scrambled form that can't be turned back into the login. The login itself stays on your computer.
 - **Your email, if you gave one**, and when you gave it. If you joined the galaxy from the queue, it is the email your copy of the game checked in with. It is used for the things listed under "Every copy of the game" above, and for Riftdogs news only if you asked for news: never sold, shared only with Resend to deliver these emails, and never used for anything else.
 - **Your saves** and a short history of recent ones, so you can play from any computer and recover from a lost or broken save.
 - **Trade records**: what you bought and sold, where and when, at what price, and payment codes you made or redeemed. They keep the shared markets working and fair.
-- **Feedback**: the bug reports and suggestions you send from the game, with your commander name, game version, computer platform, the screen you were on and your star system, so they can be fixed.
+- **Feedback**: the bug reports and suggestions you send from the game, with your skipper name, game version, computer platform, the screen you were on and your star system, so they can be fixed.
 - **Automatic checks**: the server checks saves and trades against what it saw happen, to keep the shared economy fair, and keeps what those checks find with your account.
 - **Market traffic**: the shared markets remember which ships visited and traded where, recently. These traces fade over time.
 
@@ -45,9 +45,9 @@ Online, the communicator keeps **your ship number**, **your contacts and contact
 - Blocking is private: the pilot you block is not told.
 - **Deleting your account deletes all of it** (contacts, blocks, messages and reports). Your ship number is retired and never used again.
 
-## Your commander name
+## Your skipper name
 
-Your pilot number is your identity in the game. The server keeps **your commander name, and every name you have had**, with **when each began and how**: chosen, renamed or reset. Other pilots in the game see your current name and pilot number, and your former names with their dates. Your private login stays on your computer. An older account whose commander name was taken from its account name shows that name.
+Your pilot number is your identity in the game. The server keeps **your skipper name, and every name you have had**, with **when each began and how**: chosen, renamed or reset. Other pilots in the game see your current name and pilot number, and your former names with their dates. Your private login stays on your computer. An older account whose skipper name was taken from its account name shows that name.
 
 If another pilot reports your name, the operator of the server sees the reported name, **who reported it**, and who it belongs to. Nothing else is shared with the reporter.
 
@@ -55,7 +55,7 @@ If another pilot reports your name, the operator of the server sees the reported
 
 ## Your Trade Dog Licence
 
-If you're issued a Trade Dog Licence, the server keeps **its number** (your ship number), **when it was issued** and **which parts of it you've made public** (your skills and your check flight), so your licence can be shown the way you chose. The card always shows your commander name. Your skills and check-flight results themselves are in your save. Today nothing from your licence is published anywhere: the QR code on the card leads to riftdogs.com, and pilot profile pages don't exist yet. When they do, they will show only what you made public. Deleting your account deletes your licence.
+If you're issued a Trade Dog Licence, the server keeps **its number** (your ship number), **when it was issued** and **which parts of it you've made public** (your skills and your check flight), so your licence can be shown the way you chose. The card always shows your skipper name. Your skills and check-flight results themselves are in your save. Today nothing from your licence is published anywhere: the QR code on the card leads to riftdogs.com, and pilot profile pages don't exist yet. When they do, they will show only what you made public. Deleting your account deletes your licence.
 
 ## riftdogs.com
 
@@ -97,7 +97,7 @@ We keep queued and sent email records (your address, which email it was, and whe
 ## How to delete it
 
 - **Remove my email:** Connection settings → Remove my email. The server forgets your email and when you gave it, and takes it off the waiting list; you get no more news and no more of the emails above. The game then forgets this computer as Forget this computer does, and asks for an email again before the next game.
-- **Delete my account:** Connection settings → Delete my account, then type your pilot number to confirm. The server deletes your account, login, email, saves, save history, trade records, communicator data, commander names, licence and messages waiting for you at once, and from its backups within 30 days. The game forgets your login and its copy of your online save on this computer and, for an account on the Riftdogs server, forgets this computer's install as Forget this computer does; your email's place in the queue goes too, and the email itself once no other copy uses it. Payment codes you made that nobody has redeemed yet are cancelled. Records other players need (a payment code they redeemed from you) and your bug reports are kept without your name, though another player's own statement still shows the line it got (for example a payment from you).
+- **Delete my account:** Connection settings → Delete my account, then type your pilot number to confirm. The server deletes your account, login, email, saves, save history, trade records, communicator data, skipper names, licence and messages waiting for you at once, and from its backups within 30 days. The game forgets your login and its copy of your online save on this computer and, for an account on the Riftdogs server, forgets this computer's install as Forget this computer does; your email's place in the queue goes too, and the email itself once no other copy uses it. Payment codes you made that nobody has redeemed yet are cancelled. Records other players need (a payment code they redeemed from you) and your bug reports are kept without your name, though another player's own statement still shows the line it got (for example a payment from you).
 - **Or ask the operator** of the server you play on, who can do the same for you.
 
 Your offline pilot is never touched by either.

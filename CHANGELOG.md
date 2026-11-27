@@ -1,3 +1,13 @@
+# 0.19.0 — the Riftdogs fleet
+
+- **New ships.** Every ship in flight is now a 3D model of the Riftdogs fleet. You fly the RD-1 Kestrel; police fly the RD-3 Harrier; traders fly the RD-2 Longreach, RD-4 Wayfarer, TR-47 Mastiff and the claw freighter; pirates fly whatever they can get their hands on. Ships face the way they fly, other pilots' noses point the right way (even reversing), and your cockpit shows your Kestrel from above.
+- **The Autopilot** (was the docking computer) now flies you in from wherever hyperspace drops you and docks, and stays on through a jump. It switches off if you're attacked or touch the controls, and it never docks you into an arrest: if docking here means arrest, it holds and tells you (R to surrender, then D).
+- **New names and numbers.** Equipment: Autonomous Guidance Missile (AGM), Extended Cargo Pods, Energy laser, External Collection System (ECS), Asteroid Energy Weapon, Autopilot, Shield generator, High Energy Combat Weapon; the standard laser is the Burst laser. Governments: Lawless, Wartorn, Autocratic, Collective, League, Self Determined State, Corporation. Tech level is now Yard grade.
+- **Your kit.** Fuel is shown in litres (a 20,000 L tank, a little more range than before); the hold is four 8 t cargo pods (32 t), upgraded to four 10 t pods (40 t); you start with 2 AGMs and carry up to 6. Existing pilots keep everything and get the higher limits.
+- **The Rift Era.** STA dates now count years of the Rift Era: today is 218 RE.
+- **Skipper.** You're the Skipper now, everywhere.
+- Server: update the server first. Older games keep working.
+
 # 0.18.1 — Ada Morrow and the comms page
 
 - **Chief Engineer Ada Morrow** now gives the word about the alpha test, with her own portrait, after Herbert's guided trip. Herbert sticks to flying and trading.

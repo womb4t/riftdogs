@@ -2,9 +2,9 @@
 
 A living galaxy you trade in.
 
-An original Elite-inspired Python space game for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.18.1**.
+An original space trading game in Python for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.19.0**.
 
-Play offline, or play online in a shared living galaxy: other commanders' ships on your scanner, a shared market, the Relay's news ticker and payment codes. Online play uses the official Riftdogs server, which saves your progress. Offline play needs no account; every copy of the game checks in with its email and install ID (see [PRIVACY.md](PRIVACY.md)). Shared combat is a future project. The phased development plan is in [ROADMAP.md](ROADMAP.md).
+Play offline, or play online in a shared living galaxy: other skippers' ships on your scanner, a shared market, the Relay's news ticker and payment codes. Online play uses the official Riftdogs server, which saves your progress. Offline play needs no account; every copy of the game checks in with its email and install ID (see [PRIVACY.md](PRIVACY.md)). Shared combat is a future project. The phased development plan is in [ROADMAP.md](ROADMAP.md).
 
 The game's trade rules come from the **Sovereign Trade Assembly (STA)**, the galaxy's parliament; its Galactic Council runs the economy within them.
 
@@ -66,7 +66,7 @@ The updater checks the official origin and clean `main` branch, fetches, fast-fo
 
 ## Play
 
-You start docked with 400 credits, a full 7-unit fuel tank, a pulse laser, three missiles and a 20-tonne hold. Food is cheap on agricultural Halvora and more valuable on industrial Corvant. Industrial exports tend to sell well on agricultural worlds. Keep enough credits for fuel and repairs.
+You start docked with 400 credits, a full 20,000-litre fuel tank, a burst laser, two AGMs (Autonomous Guidance Missiles) and a 32-tonne hold: four 8-tonne cargo pods. Extended Cargo Pods enlarge them to 10 tonnes each (40 tonnes). Food is cheap on agricultural Halvora and more valuable on industrial Corvant. Industrial exports tend to sell well on agricultural worlds. Keep enough credits for fuel and repairs.
 
 | Screen | Controls |
 | --- | --- |
@@ -79,7 +79,7 @@ You start docked with 400 credits, a full 7-unit fuel tank, a pulse laser, three
 | Flight | Arrows steer; W accelerate; S brake, then reverse; Q/E roll |
 | View | F toggles front/rear view; Space fires the current view’s fitted laser |
 | Weapons | Space fires selected laser; V cycles installed lasers; M fires a missile; L lays a mine |
-| Equipment | D docking computer; J signal jammer; K phase cloak |
+| Equipment | D autopilot; J signal jammer; K phase cloak |
 | Safety and radio | R requests docking clearance; N hails a disabled ship; Ctrl+E distress/recovery; 8 engineering and training |
 | Local beacons | Ctrl+S station; Ctrl+P planet; Ctrl+R asteroid/ore; Ctrl+U sun; O collects nearby ore |
 | Steering aids | Ctrl+F fine steering; Y (or Ctrl+G) approach guidance; X silences the alarm |
@@ -90,11 +90,11 @@ You start docked with 400 credits, a full 7-unit fuel tank, a pulse laser, three
 | Comms panel (5) | Enter types a line, Enter sends, Tab changes channel, Backspace on an empty line stops typing (Esc still saves and closes) |
 | General | Backspace back; ` menu; Ctrl+N quick note; Ctrl+M full screen; Esc saves and closes |
 
-**New pilots:** an old hauler called Herbert appears on screen and offers to show brand-new commanders the ropes: say yes and he talks you through your first trip, in a panel while docked and a small card in flight. Say no and he leaves you to it. Call him with Ctrl+H or 5 (comms) for your first three trips; if you said no, he offers again when you call him docked. He works offline.
+**New pilots:** an old hauler called Herbert appears on screen and offers to show brand-new skippers the ropes: say yes and he talks you through your first trip, in a panel while docked and a small card in flight. Say no and he leaves you to it. Call him with Ctrl+H or 5 (comms) for your first three trips; if you said no, he offers again when you call him docked. He works offline.
 
 **Trade Dog Licence:** in VMS (2) press D. Nine logbook skills (Trading, Jump flight, Non-jump flight, Combat, Mining and scooping, Views, Rescue, DSC and Comms) are scored quietly as you play. Herbert has short lessons for four of them, and Examiner Varga of the Sovereign Trade Assembly sets a check flight: launch and take radio station control, fly to a marker beacon without the jump drive, answer a staged distress call on DSC, then dock against the clock. Online pilots are issued the licence under their ship number. The card shows a QR code linking to riftdogs.com/pilot/ and your number, reputation stars, and which parts other pilots may see. Herbert retires once you're licensed.
 
-**Commander names and the STA registry:** your pilot number is your identity. New pilots choose a commander name once (the join form, sign-up, or the first-login name screen). Other pilots see your name and pilot number; the Target page and comms contacts also show former names with STA dates, and Ctrl+T reports a name. To rename, dock, then VMS (2), then N: 500 cr, once a week, and the first name is free. Menu → Alarm sound switches the alarm On or Off (warnings still show).
+**Skipper names and the STA registry:** your pilot number is your identity. New pilots choose a skipper name once (the join form, sign-up, or the first-login name screen). Other pilots see your name and pilot number; the Target page and comms contacts also show former names with STA dates, and Ctrl+T reports a name. To rename, dock, then VMS (2), then N: 500 cr, once a week, and the first name is free. Menu → Alarm sound switches the alarm On or Off (warnings still show).
 
 ### Mouse controls
 
@@ -108,34 +108,34 @@ L first checks fuel and the locked destination's jump requirement, including a c
 
 After requesting departure, wait two seconds for clearance, then press L (or click Launch) to leave. Cancelling keeps you docked.
 
-Before docking, press **R** or use **Radio R** in Actions. Station control responds after two seconds if within 10,000 metres. Clearance lasts 120 seconds. A docking computer requests clearance automatically. Regulated stations refuse pilots with outstanding fines of 100 credits or more; anarchy and feudal ports still accept them. Profiles show the current docking policy for your pilot. Departure from a station where you are already docked remains permitted.
+Before docking, press **R** or use **Radio R** in Actions. Station control responds after two seconds if within 10,000 metres. Clearance lasts 120 seconds. An autopilot requests clearance automatically. Regulated stations refuse pilots with outstanding fines of 100 credits or more; Lawless and Wartorn ports still accept them. Profiles show the current docking policy for your pilot. Departure from a station where you are already docked remains permitted.
 
 Fly through the rotating entrance at speed **1–25**. Centre within **14 metres horizontally and 6 metres vertically**, measured in the slot's frame, and use Q/E to keep the slot horizontal within about nine degrees. The cockpit reports roll error. Begin braking early, especially with a loaded hold. A station collision damages shields and hull.
 
-Without valid clearance, even a geometrically correct entry will be rejected as a collision. A purchased docking computer handles the approach when the station is ahead, within 2,500 metres, and no hostile ship is present. C or manual steering cancels it.
+Without valid clearance, even a geometrically correct entry will be rejected as a collision. A purchased autopilot (D) flies you in from anywhere in a system: it turns to the station, flies to the port's approach point 2,500 metres out at up to 120 m/s, steering round the planet, the station and other ships, requests clearance, lines up and docks. Left on when you jump, it takes over on arrival. It won't fly you into a fight: an attacking pirate or police ship switches it off ("Autopilot off: under attack."), and it stays off until you press D again. Refused clearance, it waits at the approach point and says why. D or any flight control hands the ship back to you at its current speed and heading.
 
 ### Trading, equipment and mining
 
-Buy and sell quotes are separate: BUY is what you pay, SELL is what you receive. Station stock is finite and saved. Cargo reduces top speed, turning rate, acceleration and braking, and increases fuel consumption. A larger hold increases capacity to 35 tonnes.
+Buy and sell quotes are separate: BUY is what you pay, SELL is what you receive. Station stock is finite and saved. Cargo reduces top speed, turning rate, acceleration and braking, and increases fuel consumption. Extended Cargo Pods raise the hold from 32 to 40 tonnes.
 
-Outfitting availability depends on local technology. You can buy a beam laser, military laser, mining laser, missiles, mines, scoops, an energy unit, docking computer, jammer or cloak. Front lasers can be switched with V. A rear laser mount costs 600 credits at tech level 4 or above and comes with a pulse laser. Press F for rear view, then Space to fire it; V in rear view moves any laser you own to the rear mount (each bought laser sits on one mount at a time; the pulse laser fits both). No mount means no rear firing. Rear view does not change your ship’s course or flight controls. Ammunition must be replaced; missiles and mines each have four storage slots. Browse down to see all equipment.
+Outfitting availability depends on the local yard grade. You can buy an energy laser, high energy combat weapon, asteroid energy weapon, missiles, mines, an ECS, a shield generator, an autopilot, jammer or cloak. Front lasers can be switched with V. A rear laser mount costs 600 credits at yard grade 4 or above and comes with a burst laser. Press F for rear view, then Space to fire it; V in rear view moves any laser you own to the rear mount (each bought laser sits on one mount at a time; the burst laser fits both). No mount means no rear firing. Rear view does not change your ship’s course or flight controls. Ammunition must be replaced; the AGM rack holds six and the mine rack four. Browse down to see all equipment.
 
-Use A to find an asteroid, select a purchased mining laser with V, and fire until it breaks up. Approach the fragments at speed 50 or below. With scoops fitted, O collects one tonne of ore within 260 metres; sell ore at a station. Ordinary lasers do not yield ore.
+Use A to find an asteroid, select a purchased asteroid energy weapon with V, and fire until it breaks up. Approach the fragments at speed 50 or below. With an ECS fitted, O collects one tonne of ore within 260 metres; sell ore at a station. Ordinary lasers do not yield ore.
 
 ### Navigation and fuel
 
-Every planet has galactic coordinates and a searchable profile showing economy, government, technology, population and diameter. Search with / and press Enter to lock the first match. C accepts an arbitrary coordinate such as `4.5,6.2`, within 0–10 on both axes. The locked waypoint appears in navigation and is saved when docked.
+Every planet has galactic coordinates and a searchable profile showing economy, government, yard grade, population and diameter. Search with / and press Enter to lock the first match. C accepts an arbitrary coordinate such as `4.5,6.2`, within 0–10 on both axes. The locked waypoint appears in navigation and is saved when docked.
 
 The map shows both travel choices for your current load:
 
-- **Hyperspace:** hold H continuously for a visible three-second countdown, followed by a 1.6-second star-stream transition and arrival banner. Releasing H or leaving the cockpit before ignition cancels without spending jump fuel. Fuel is rechecked and deducted at ignition. Normal flight and threats continue during charging. Jump cost is `1.2 × distance + 0.2` fuel.
-- **Cruise:** `45 × distance × cargo mass factor` seconds of game time, costing `0.25 × distance × cargo mass factor` fuel. T cancels at your current coordinates.
+- **Hyperspace:** hold H continuously for a visible three-second countdown, followed by a 1.6-second star-stream transition and arrival banner. Releasing H or leaving the cockpit before ignition cancels without spending jump fuel. Fuel is rechecked and deducted at ignition. Normal flight and threats continue during charging. Jump cost is `(1.2 × distance + 0.2) × 2,500` litres of fuel.
+- **Cruise:** `45 × distance × cargo mass factor` seconds of game time, costing `0.25 × distance × cargo mass factor × 2,500` litres of fuel. T cancels at your current coordinates.
 
 The cockpit has a top-down scanner: your ship is white at its centre, front is toward the top, pirates are red, police/planets blue, and the station green. Its radius is 2,500 metres, with more distant contacts clamped to the rim. Click a ship dot or press Tab to select it; the selected ship gains a gold scanner ring and a pink cockpit marker. Click the station/planet to select its local navigation beacon.
 
 The active navigation destination has a gold dot/bracket when visible and an edge arrow when outside the view. Rearward targets are labelled “BEHIND: 4”; toggle rear view to see them. A remote locked galaxy waypoint shows a compass course; H/T travels between galactic coordinates. Once there, local beacons guide normal flight toward the station, sun, planet or ore. Steering in local space does not change galactic coordinates.
 
-These are game-scale distances/timings. Local flight also consumes fuel. The 7-unit tank no longer guarantees a seven-light-year jump. Low reserves trigger a warning; fuel can run out. F at a station buys a refill at 3 credits per unit, independently of hull repairs. Scoops can gather fuel near the sun: Ctrl+U selects its beacon, skim within 500 metres at speed 10–60, and retreat before heat reaches 90. Empty-space coordinates have no station or services. If stranded without a viable fuel source, press Ctrl+E to request rescue and review salvage terms.
+These are game-scale distances/timings. Local flight also consumes fuel. The 20,000-litre tank does not guarantee the longest jump it could make on paper. Low reserves trigger a warning; fuel can run out. F at a station buys a refill at 0.8–2.0 credits per 1,000 litres (sold in 2,500-litre measures), independently of hull repairs. Scoops can gather fuel near the sun: Ctrl+U selects its beacon, skim within 500 metres at speed 10–60, and retreat before heat reaches 90. Empty-space coordinates have no station or services. If stranded without a viable fuel source, press Ctrl+E to request rescue and review salvage terms.
 
 ### Distress calls, salvage and rescue
 
@@ -155,7 +155,7 @@ Press **8 / Skills** for engineering. Buy levels 1–5 at a station for 200, 400
 
 Disabled robot ships sometimes appear in local space. Select their gold scanner contact (or cycle targets with 5), get within **350 metres** and slow to **30 or less**. In engineering, choose Help target / H to attempt assistance. Success earns a crew payment; failure uses the same repair cooldown as working on your own ship. Repair parties cannot work with an active hostile present.
 
-A failed attempt imposes a **real-time** wait: **30 minutes, then 60, 120, 240…** for consecutive failures. A successful attempt resets the failure sequence. Cooldowns are tied to the commander and stored immediately in an engineering ledger, so restarting or reloading the previous station save does not skip the wait. A new pilot has a separate identity. Field-repair outcomes, cargo and crew rewards are retained by the live autosave and on exit. There is no need to wait out a cooldown to call for distress rescue.
+A failed attempt imposes a **real-time** wait: **30 minutes, then 60, 120, 240…** for consecutive failures. A successful attempt resets the failure sequence. Cooldowns are tied to the skipper and stored immediately in an engineering ledger, so restarting or reloading the previous station save does not skip the wait. A new pilot has a separate identity. Field-repair outcomes, cargo and crew rewards are retained by the live autosave and on exit. There is no need to wait out a cooldown to call for distress rescue.
 
 ### Bank and station storage
 
@@ -179,9 +179,9 @@ A destroyed ship stays destroyed across restarts. **R / Recover starter ship** e
 
 Robot pirates can attack from ahead or astern; missiles and mines can help against pursuers. Mines arm after 1.5 seconds, persist for 75 seconds and detonate on hostile proximity. Their blast can damage the ship that deployed them. Robot pirates can deploy mines too.
 
-The bought signal jammer (Z) disrupts targeting for eight seconds, costs 0.05 fuel and has a 20-second cooldown. The bought phase cloak (K) prevents robot targeting while active, burns 0.012 fuel per second and slows shield regeneration. Firing a laser or missile, or deploying a mine, drops the cloak. These are original game mechanics rather than reproductions of Elite's anti-missile ECM.
+The bought signal jammer (Z) disrupts targeting for eight seconds, costs 125 litres of fuel and has a 20-second cooldown. The bought phase cloak (K) prevents robot targeting while active, burns 30 litres of fuel a second and slows shield regeneration. Firing a laser or missile, or deploying a mine, drops the cloak. These are original game mechanics.
 
-Narcotics and unlicensed arms are marked `*` in the market. Regulated stations may inspect arriving cargo, confiscate contraband and issue fines. Frontier anarchies/feudal worlds do not run these checks. Outstanding fines can attract robot police; destroying a police ship increases the fine rather than paying a bounty. Pay a fine at a station from Money (3) then F, if you can afford it.
+Narcotics and unlicensed arms are marked `*` in the market. Regulated stations may inspect arriving cargo, confiscate contraband and issue fines. Lawless and Wartorn worlds do not run these checks. Outstanding fines can attract robot police; destroying a police ship increases the fine rather than paying a bounty. Pay a fine at a station from Money (3) then F, if you can afford it.
 
 ## The communicator
 
@@ -206,7 +206,7 @@ Connection settings (from the start screen) has **Remove my email** and **Delete
 
 Game files install under `${XDG_DATA_HOME:-~/.local/share}/riftdogs/`. The launcher is in the same data directory under `applications/riftdogs.desktop`.
 
-The save is `riftdogs/save.json`. Per-commander repair cooldowns are stored alongside it as `engineering-<commander-id>.json`; back these up with the save. Live flight and station transactions save automatically, including clean exits and destruction. Original saves are migrated, preserving cash, cargo, equipment and location. The `_session` section records the current simulation for restart/catch-up. N on the death screen explicitly starts a new pilot and replaces all assets. Back up `save.json` before experimenting with it.
+The save is `riftdogs/save.json`. Per-skipper repair cooldowns are stored alongside it as `engineering-<commander-id>.json`; back these up with the save. Live flight and station transactions save automatically, including clean exits and destruction. Original saves are migrated, preserving cash, cargo, equipment and location. The `_session` section records the current simulation for restart/catch-up. N on the death screen explicitly starts a new pilot and replaces all assets. Back up `save.json` before experimenting with it.
 
 Remove installed code and launcher while keeping your save:
 
@@ -242,9 +242,9 @@ Deal prices: pressing B or S repeatedly on the same cargo keeps one price for th
 Pick other cargo, switch between buying and selling, wait 10 seconds or leave, and prices catch up.
 
 Money reports: Money (3) then E shows where your money came from and went (today, the last 7 days
-or all time; LEFT/RIGHT), how you compare with the average commander, and what to do about it.
+or all time; LEFT/RIGHT), how you compare with the average skipper, and what to do about it.
 The statement (Money then T, or 6) lists every payment and receipt: trades, kit bought and sold, fuel, service, bays, training, fines, bribes, rescue fees, jobs, bounties, the Crymto exchange and bank transfers, with money in, money out and your balance after each.
-Outfitting: B buys and S sells the selected kit back for half price. The pulse laser is built in.
+Outfitting: B buys and S sells the selected kit back for half price. The burst laser is built in.
 Use H/T for remote galaxy destinations. Ctrl+F toggles fine steering (20% arrows and Q/E roll),
 useful for docking. Mouse: Actions > Nav > Guide; Actions > Safety > Fine.
 
@@ -300,15 +300,15 @@ are preserved when updating.
 
 Contraband rewards depend on the planet: industrial worlds are cheaper sources,
 agricultural worlds pay more for narcotics, and frontier worlds have strong arms
-demand. Anarchy/feudal governments add an arms premium; corporate states add
+demand. Lawless and Wartorn governments add an arms premium; Corporations add
 some narcotics demand. Normal dealer spreads and customs risks still apply.
 
 Detailed planet profiles: 1 opens the map; select a named planet and press I
-or click Planet profile. View coordinates, government, population, size, tech,
+or click Planet profile. View coordinates, government, population, size, yard grade,
 customs, docking access, station services and all commodity buy/sell prices.
 Left/Right or Previous/Next browses profiles without changing your waypoint.
 I or the Back button returns to the map. The main header shows your current system
-name, economy and technology level, with credits/kills below.
+name, economy and yard grade (such as Y5), with credits/kills below.
 
 FEEDBACK: press Ctrl+0 (or Menu 4, Report a bug), choose Bug report or Suggestion,
 then type a description and click Log report. Each report is saved as its own
@@ -317,7 +317,7 @@ game version, platform, screen and system are included; no save file is attached
 
 CRYMTO (CYM): contraband sales normally pay this separate account balance.
 Crymto survives ship destruction and is exempt from salvage claims.
-At anarchy and feudal ports Crymto pays for anything (goods, kit, fuel, service,
+At Lawless and Wartorn ports Crymto pays for anything (goods, kit, fuel, service,
 bays, training, fines) before credits. Elsewhere B buys legal goods with credits,
 and contraband with Crymto first, credits covering any shortfall. Contraband's street
 price carries the smugglers' premium, so it always costs more to buy than the same
@@ -333,8 +333,8 @@ there on arrival. Your own buying and selling moves prices at once.
 N negotiates a one-tonne contraband sale for clean credits at a 15% discount
 (review the offer and press Y to accept). Every station has a Crymto exchange
 (Money, X). Credits -> Crymto costs 10%.
-Crymto -> credits costs 20% at anarchy and feudal ports, 30% under dictatorship,
-communist or confederacy rule and 40% in democracies and corporate states, where a
+Crymto -> credits costs 20% at Lawless and Wartorn ports, 30% under Autocratic, Collective or
+League rule and 40% under Self Determined States and Corporations, where a
 compliance check (more likely where police are well funded) can freeze half the
 amount and add a 10% fine.
 Conversion previews show net proceeds before you choose to convert. Exchange
@@ -346,7 +346,7 @@ Each station has six police ships, with reserve counts in its planet profile.
 Reserves and defeats persist after reloading and do not refill automatically.
 Destroying all six permits docking despite hostility/fines, but station lasers
 warn for 15 seconds before firing within 2500m. Withdraw or dock promptly.
-Fuel scoops collect at 150-500m from the sun, speed 10-60. Shields slow heating;
+The ECS collects fuel at 150-500m from the sun, speed 10-60. Shields slow heating;
 above 70% heat radiation drains them, and hull damage follows shield failure.
 90% is the thermal danger limit. Shields do not recharge inside the solar zone;
 move beyond 600m to cool down and recharge.
@@ -395,8 +395,8 @@ all, plus Paste/Copy/Select all buttons. Notes and feedback accept these
 shortcuts too. Heat now has its own flight instrument with shield protection
 and the 90% danger marker; VMS fuel is shown separately.
 
-Proximity mines cost 75 credits and require tech level 4; maximum four.
-Outfitting shows the local/required tech levels even for ammunition.
+Proximity mines cost 75 credits and require yard grade 4; maximum four.
+Outfitting shows the local and required yard grades even for ammunition.
 
 ## Station hostility cooldown
 
@@ -404,7 +404,7 @@ Station hostility cools after 30 minutes away from the station (more than 10,000
 
 ## Station patrol zones
 
-Lawful stations patrol 5,000 m around themselves: pirates do not attack inside that radius, and a pirate chasing you breaks off when you enter it. The cockpit shows PATROL ZONE while you are covered. Anarchy and Feudal stations offer no patrol, and a station that is hostile to you will not protect you.
+Lawful stations patrol 5,000 m around themselves: pirates do not attack inside that radius, and a pirate chasing you breaks off when you enter it. The cockpit shows PATROL ZONE while you are covered. Lawless and Wartorn stations offer no patrol, and a station that is hostile to you will not protect you.
 
 ## Emergency close
 

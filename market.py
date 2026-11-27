@@ -28,7 +28,7 @@ RISK_PREMIUM_CAP = 3.           # covers customs' full 55% search with the rewar
 # Prices follow stock moved by bots and station economies with this lag (seconds), so a margin seen at one
 # station is still mostly there after a stop on the way. Commanders' own trades move prices at once.
 PRICE_LAG = 30*60.
-REPORT_CAP = 40.                # tonnes one commander's reports count for, per world per half-life (a hold is <= 35 t)
+REPORT_CAP = 40.                # tonnes one commander's reports count for, per world per half-life (a hold is <= 40 t)
 RISK_REWARD = .25               # smuggling must pay more than honest trade on average, or nobody would take the risk
 
 

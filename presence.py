@@ -31,6 +31,14 @@ class SharedPresence:
         for vector,limit in ((position,1000000),(velocity,400)):
             if type(vector) is not list or len(vector) != 3 or any(type(v) not in (int,float) or not math.isfinite(v) for v in vector): raise ValueError('Invalid vector')
             if math.sqrt(sum(v*v for v in vector)) > limit: raise ValueError('Vector outside testing limits')
+        heading = {}
+        for key in ('facing','up'):   # optional (older games send neither): unit directions in the world frame
+            if key not in data: continue
+            vector = data[key]
+            if (type(vector) is not list or len(vector) != 3 or any(type(v) not in (int,float) or not math.isfinite(v) for v in vector)
+                    or not .9 <= math.sqrt(sum(v*v for v in vector)) <= 1.1): raise ValueError('Invalid vector')
+            heading[key] = list(vector)
+        if len(heading) != 2: heading = {}   # relayed only as a pair
         now = time.monotonic()
         with self.lock:
             old = self.players.get(player_id)
@@ -42,7 +50,7 @@ class SharedPresence:
                     if math.dist(position,old['position']) > maximum: raise ValueError('Movement update too large')
             self.players[player_id] = dict(id=player_id,name=name,number=number,system=system,mode=mode,
                 position=list(position),velocity=list(velocity) if mode == 'flight' else [0.,0.,0.],
-                session=session,sequence=sequence,epoch=epoch,seen=now)
+                session=session,sequence=sequence,epoch=epoch,seen=now,**heading)
             self.players = {key:value for key,value in self.players.items() if now-value['seen'] < 10}
             if mode in ('docked','flight'): (self.docked if mode == 'docked' else self.flying).setdefault(player_id,{})[system] = now
             for history in (self.docked,self.flying):
@@ -51,7 +59,7 @@ class SharedPresence:
                     if not history[pid]: del history[pid]
             public = []
             for player in list(self.players.values())[:MAX_LISTED]:
-                item = {key:player[key] for key in ('id','name','number','system','mode','position','velocity')}
+                item = {key:player[key] for key in ('id','name','number','system','mode','position','velocity','facing','up') if key in player}
                 age = min(.75,max(0,now-player['seen']))
                 item['position'] = [p+v*age for p,v in zip(player['position'],player['velocity'])]
                 public.append(item)

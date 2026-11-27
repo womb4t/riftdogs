@@ -340,7 +340,7 @@ class StartScreen:
         except OSError: self.error = 'Joined, but your login could not be saved. Check folder permissions.'; return
         self.edit_state(lambda state: state.update(claim=None))
         self.signup,self.joining = None,False
-        self.error = f'Welcome aboard, Commander {name}! Choose Online play.'
+        self.error = f'Welcome aboard, Skipper {name}! Choose Online play.'
 
     def forget_computer(self):
         before,self.error = self.error,'Forgetting this computer...'
@@ -403,7 +403,7 @@ class StartScreen:
         except (RuntimeError,ValueError) as error: self.error = str(error); return None
         except OSError: self.error = 'Could not reach the server. Check your connection, or play offline.'; return None
         self.signup = None
-        self.error = f'Welcome aboard, Commander {name}! Choose Online play.'
+        self.error = f'Welcome aboard, Skipper {name}! Choose Online play.'
         return None
 
     def form_event(self, kind, value, record, keys, limits):
@@ -645,7 +645,7 @@ class StartScreen:
         if self.deleting is not None:
             d.fill(40,90,1020,545,(5,15,25))
             d.text(70,110,'DELETE MY ACCOUNT / '+self.config['server'],RED)
-            d.text(70,155,'This deletes your commander, save, trade records and email from the server.')
+            d.text(70,155,'This deletes your skipper, save, trade records and email from the server.')
             d.text(70,185,'It cannot be undone. Your offline pilot on this computer is not touched.')
             d.text(70,215,f'Your pilot number is {self.pilot}.' if self.pilot else 'Your pilot number is not known yet. Play online once, then try again.',GOLD)
             d.text(70,258,'Type your pilot number to confirm')
@@ -658,7 +658,7 @@ class StartScreen:
         elif self.joining:
             d.fill(40,90,1020,545,(5,15,25))
             d.text(70,110,'CHOOSE YOUR GALAXY NAME',GOLD)
-            d.text(70,155,'Commander name')
+            d.text(70,155,'Skipper name')
             d.text(70,255,names.MESSAGE+' Other pilots see this name.')
             d.rect(70,200,960,44,GOLD)
             text = self.signup['name'][-81:]
@@ -670,7 +670,7 @@ class StartScreen:
         elif self.signup is not None:
             d.fill(40,90,1020,545,(5,15,25))
             d.text(70,110,'NEW PILOT SIGN-UP / '+self.config['server'],GOLD)
-            d.text(70,155,'Commander name. '+names.MESSAGE)
+            d.text(70,155,'Skipper name. '+names.MESSAGE)
             d.text(70,250,'Email for Riftdogs news (optional)')
             for i,key in enumerate(('name','email')):
                 y = 200+i*95
@@ -753,7 +753,7 @@ class StartScreen:
         from riftdogs import GOLD,GREEN,RED
         d,w = self.d,self.welcome
         d.fill(40,200,1020,490,(5,15,25))   # below the logo band of the splash art
-        d.text(70,215,'WELCOME, COMMANDER',GOLD)
+        d.text(70,215,'WELCOME, SKIPPER',GOLD)
         prompt = 'Your email (required). We use it for your place in the online queue, replies to your bug reports and essential notices about the game.'
         for row,line in enumerate(textwrap.wrap(prompt,86)): d.text(70,255+row*26,line)
         d.rect(70,320,960,44,GOLD if self.field == 0 else GREEN)

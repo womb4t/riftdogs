@@ -29,7 +29,7 @@ CHECK_PARTS = ('launch', 'beacon', 'distress', 'dock')
 PART_MAX = 10
 PASS_MARK = 115
 RETAKE_SECONDS = 1800
-STA_YEAR_OFFSET = 1281
+RIFT_ERA_START = 1808   # real 2026 is 218 RE
 CLASS = 'TRADER'
 
 PUBLIC_FIELDS = ('skills', 'check')   # the name is always public; old records may still carry a 'name' switch
@@ -38,12 +38,13 @@ DEFAULT_PUBLIC = {'skills': False, 'check': False}
 RECORD_KEYS = ('skills', 'assessment', 'check', 'last_attempt', 'passed', 'number', 'issued', 'stars', 'public',
                'lesson', 'departed', 'note_pending', 'rescues')
 
-# What the pilot keeps when the old instructor departs.
+# What the pilot keeps when the old instructor departs: a new pilot's kit (riftdogs START_CREDITS, START_MISSILES and
+# a full TANK, in fuel units; test_own_numbers checks they match).
 LEFT_CREDITS = 400
 LEFT_FOOD = 1
-LEFT_MISSILES = 3
+LEFT_MISSILES = 2
 LEFT_LASER = 'pulse'
-LEFT_FUEL = 7.0
+LEFT_FUEL = 8.0
 
 _MONTHS = ('JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC')
 
@@ -156,16 +157,16 @@ def finish_check(record, parts, now):
 
 def sta_date(t):
     g = time.gmtime(t)
-    return '%d %s %d' % (g.tm_mday, _MONTHS[g.tm_mon - 1], g.tm_year + STA_YEAR_OFFSET)
+    return '%d %s %d RE' % (g.tm_mday, _MONTHS[g.tm_mon - 1], g.tm_year - RIFT_ERA_START)
 
 
 def expires(t):
     g = time.gmtime(t)
-    year = g.tm_year + STA_YEAR_OFFSET + 5
+    year = g.tm_year + 5   # the real year decides the leap day
     day = g.tm_mday
     if g.tm_mon == 2 and day == 29 and not (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
         day = 28
-    return '%d %s %d' % (day, _MONTHS[g.tm_mon - 1], year)
+    return '%d %s %d RE' % (day, _MONTHS[g.tm_mon - 1], year - RIFT_ERA_START)
 
 
 def stars(trips, bounties, rescues, offences, fined):

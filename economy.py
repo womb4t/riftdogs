@@ -42,7 +42,7 @@ FACTORIES = {
     'Industrial': dict(output={MACHINERY: 1.3, COMPUTERS: 1.0, MEDICINE: .8, ARMS: .6}, inputs={ORE: 1.0, FOOD: .4}),
     'Frontier': dict(output={ORE: 1.4, GOLD: .7, SILVER: .9, ARMS: .3}, inputs={MACHINERY: .6, FOOD: .3}),
 }
-LAWLESS = ('Anarchy', 'Feudal')
+LAWLESS = ('Lawless', 'Wartorn')
 
 BASE_RATE = 1/(50*60)       # how fast stock settles towards its target with no ships about (per second)
 TARGET_GAIN = .32           # how far production minus consumption pushes the target from normal stock

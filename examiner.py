@@ -10,8 +10,8 @@ FACES = ('neutral', 'noting', 'sceptical', 'approving', 'stern')
 
 LINES = {
     'booked': (
-        "Your check flight is booked. Launch within two minutes, Commander.",
-        "Booked. You have two minutes to launch, Commander. Do not keep me waiting.",
+        "Your check flight is booked. Launch within two minutes, Skipper.",
+        "Booked. You have two minutes to launch, Skipper. Do not keep me waiting.",
     ),
     'brief_launch': (
         "Part one. Launch, and call station control on the radio. Do it properly.",
@@ -34,26 +34,26 @@ LINES = {
         "Not to standard. Continue.",
     ),
     'pass': (
-        "You have passed, Commander. The Assembly will record it.",
+        "You have passed, Skipper. The Assembly will record it.",
         "Passed. Do not mistake that for a reason to relax.",
     ),
     'fail': (
         "You have not passed. Not every part was to standard.",
-        "Not today, Commander. Some of it was below standard. Book again.",
+        "Not today, Skipper. Some of it was below standard. Book again.",
     ),
     'aborted': (
         "The check flight is ended. You will book another.",
     ),
     'not_ready': (
-        "You are not ready, Commander. {skill} is not yet shown.",
+        "You are not ready, Skipper. {skill} is not yet shown.",
         "I will not examine an unprepared pilot. {skill} first.",
     ),
     'online_only': (
-        "I examine online pilots only, Commander. Connect to a server first.",
+        "I examine online pilots only, Skipper. Connect to a server first.",
     ),
     'wait': (
         "You may sit again in {minutes} minutes. Not before.",
-        "Rules are rules. {minutes} minutes, Commander.",
+        "Rules are rules. {minutes} minutes, Skipper.",
     ),
 }
 

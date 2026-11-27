@@ -14,7 +14,7 @@ CALL_DELAY = 4.0      # seconds after the new-commander intro closes before he c
 IDLE_NUDGE = 90.0     # seconds on one guided step before his single nudge
 ON_CALL_TRIPS = 3     # he signs off on docking at the end of this trip
 RESUME_DELAY = 3.0   # seconds after loading a game mid-trip before he repeats the current step
-LOW_FUEL = 1.0        # units in the tank (of 7) he calls low even without a course set
+LOW_FUEL = 1.0        # units in the tank (of 8; 2,500 L a unit) he calls low even without a course set
 
 STAGES = ('waiting', 'offered', 'guiding', 'on_call', 'gone')
 EVENTS = ('bought', 'launched', 'course', 'jumped', 'clearance', 'docked', 'sold')
@@ -247,10 +247,10 @@ LESSONS = {
     'combat': ("Pirates turn up in flight, when you've something worth having. A bounty is 35 cr a head.",
                "SPACE fires the lasers, M a missile if you've bought one. Nose on him, trigger down.",
                "Well fought. I'd have done it quicker, but I'd have been younger."),
-    'scooping': ("Fuel / cargo scoops are 525 cr at outfitting (U on the VMS screen): ore, canisters, even the sun.",
-                 "Under 50, ore below your nose within 260 m: the scoops draw it in. Mining laser, 800 cr: optional.",
+    'scooping': ("The ECS is 480 cr at outfitting (U on the VMS screen): ore, canisters, even the sun.",
+                 "Under 50, ore within 260 m: the ECS draws it in. Asteroid Energy Weapon, 700 cr: optional.",
                  "Ore in the hold. An honest living, rocks, if not a quick one."),
-    'dsc': ("A DSC comms console is 450 cr at outfitting, tech 3 and up. Somebody's always worse off.",
+    'dsc': ("A DSC comms console is 450 cr at outfitting, yard grade 3 and up. Somebody's always worse off.",
             "Fitted, alerts show on the Distress tab: Ctrl+5 for the comms page. Acknowledge one to track it.",
             "There, you heard one. Whether you go is your own business."),
     'rescue': ("A disabled ship shows as a gold contact. Close within 1,500 m and press N to hail it.",
@@ -601,7 +601,7 @@ class Tutor:
         return self._answer(ctx)
 
     def _answer(self, ctx):
-        fuel, needed = ctx.get('fuel', 7.0), ctx.get('fuel_needed')
+        fuel, needed = ctx.get('fuel', 8.0), ctx.get('fuel_needed')
         if ctx.get('under_attack'): return [self._say('call_attack', ctx)]
         if (needed is not None and fuel < needed) or fuel < LOW_FUEL:
             return [self._say('call_fuel_docked' if ctx.get('docked') else 'call_fuel', ctx)]
