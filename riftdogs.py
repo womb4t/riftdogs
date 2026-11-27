@@ -30,6 +30,7 @@ import licence
 import names
 import qr
 import herbert_view
+import morrow
 import payments
 import seal
 import save_sync
@@ -38,7 +39,7 @@ import stations
 import cockpit
 import secrets
 
-VERSION = '0.18.0'
+VERSION = '0.18.1'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
@@ -1971,6 +1972,17 @@ class Game:
             self.herbert_show(pending['lines'],pending['face'])
             if pending.get('more'): self.herbert_panel['more'] = pending['more']
         elif seen != 'market' and self.tutor.offering(): self.herbert_reopen_offer()
+        if self.herbert_panel is None and not getattr(self,'story',None): self.morrow_alpha()
+
+    def morrow_alpha(self):
+        """Once per pilot, after Herbert's guided trip, Ada Morrow's word about the alpha test: her panel (Got it) on the
+        market screen, once his own panel is closed. Herbert's state keeps that she has said it."""
+        if not herbert.alpha_due(self.p.herbert): return
+        text,face = morrow.line('alpha'),morrow.face_for('alpha')
+        self.comms.local(morrow.NAME,text,channel='direct')
+        self.herbert_panel = dict(lines=[text],face=face,choices=['Got it'],selected=0,hits=[],mode=self.mode,who='ada')
+        self.p.herbert['alpha_said'] = True
+        self.checkpoint()
 
     def herbert_card_hidden(self):
         """The card gives way to the alarm banner, an incoming-fire warning and the thermal warning."""
@@ -5217,7 +5229,7 @@ class Game:
         elif n == 5:
             if self.mode == 'comms': self.leave_comms_page()
             elif self.mode in COMMS_PAGE_MODES: self.select_page('comms')
-            elif self.mode in COMMS_PANEL_MODES: self.toggle_comms_panel()
+            elif self.mode in COMMS_PANEL_MODES: self.toggle_comms_page()   # docked: the full page, as Ctrl+5
             else: self.message = 'The comms panel opens in the cockpit or docked: 0 Home, then 5. Ctrl+5 opens the full comms page.'
         elif n == 6:
             if self.mode == 'trades': self.mouse_back(); return
@@ -5271,8 +5283,10 @@ class Game:
         return self.comms_panel and self.mode in COMMS_PANEL_MODES
 
     def comms_shown(self):
-        """The comms log is on screen where it can be typed into: the docked panel, or the Comms page in flight."""
-        return self.comms_panel_open() or (self.mode in COMMS_PAGE_MODES and self.middle.page == 'comms')
+        """The comms log is on screen where it can be typed into: the docked panel, the Comms page in flight, or the
+        full page's Log tab (unless a number is being typed on it)."""
+        return (self.comms_panel_open() or (self.mode in COMMS_PAGE_MODES and self.middle.page == 'comms')
+                or (self.mode == 'comms' and self.comms_tab == 1 and not self.comms_number_typing))
 
     def comms_typing_now(self):
         return self.comms_typing and self.comms_shown()
@@ -5488,6 +5502,7 @@ class Game:
             return True
         if k in (ord('0'),ord('7'),ord('8'),ord('9')): return False
         view = self.comms.view()
+        if k == ord('5'): return False   # 5 goes back, as it opened the page (the Info tab is a click)
         if ord('1') <= k <= ord('6'):
             if k-ord('0') not in self.comms_tabs(view): return False   # 6 is the Ledger, as on every screen
             self.comms_set_tab(k-ord('0'))
@@ -5498,6 +5513,7 @@ class Game:
             elif k == DOWN: self.comms_log_select = max(0,self.comms_log_select-1)
             elif k == ord('r'): self.comms_report_selected(view)
             elif k == ord('c'): self.comms_set_filter(COMMS_FILTERS.index('Contact'),cycle=True)
+            elif k == ord('p'): self.cycle_comms_priority()
         elif self.comms_tab == 2:
             rows = [row for row in self.comms_contact_rows(view) if row['actions']]
             if k in (UP,DOWN) and rows: self.comms_select = (self.comms_select+(1 if k == DOWN else -1))%len(rows)
@@ -5651,17 +5667,34 @@ class Game:
             self.mouse_button(x,92,w,label,action=lambda n=n:self.comms_set_tab(n))
             if n == self.comms_tab: d.rect(x,92,w,32,GOLD)
             x += w+8
-        if view['errors']: d.text(35,615,str(view['errors'][-1])[:90],RED)
+        if view['errors'] and self.comms_tab != 1: d.text(35,615,str(view['errors'][-1])[:90],RED)
         hint = {1:'LEFT / RIGHT filter, C next contact, UP / DOWN select, R reports.',2:"UP/DOWN select; a button's first letter does it. N types a number.",
                 3:'ENTER acknowledges the selected alert.'}.get(self.comms_tab,'')
         d.text(35,590,(hint+'  ' if hint else '')+'BACKSPACE returns.',dim)
-        if self.comms_tab == 1: self.draw_comms_log(view)
+        if self.comms_tab == 1: self.draw_comms_log(view); self.draw_comms_page_typing(view)
         elif self.comms_tab == 2: self.draw_comms_contacts(view)
         elif self.comms_tab == 3: self.draw_comms_distress(view)
         elif self.comms_tab == 4: d.text(45,160,'No missions yet. Missions come with the Trade Dog licence.',GREEN)
         elif self.comms_tab == 5: d.text(45,160,'No information requests yet.',GREEN)
         elif self.comms_tab == 6: d.text(45,160,'No traffic.',GREEN)
         self.comms_page_buttons = list(self.buttons)
+
+    def draw_comms_page_typing(self, view):
+        """The Log tab's typing line (what is typed, or how to start; the channel and the priority) under the log, and
+        in the bar below: Herbert's buttons while he can be called, then the quick replies."""
+        d,y,x = self.d,615,35
+        if view['errors']: d.text(x,y-25,str(view['errors'][-1])[:90],RED)   # over the hint: it matters more
+        word = self.comms_priority_label()
+        word_x = 1165-len('SÉCURITÉ')*11
+        to = 'TO '+self.comms_channel_label()
+        line_w = word_x-x-12
+        if self.comms_typing_now(): self.text_cursor(x,y,'> '+self.comms_line[-(line_w//11-3):])
+        else: self.page_row(x,y,line_w,to+'   ENTER types, P priority, TAB channel while typing',GREEN)
+        d.text(word_x,y,word,RED if self.comms_priority in ('distress','urgency') else GOLD if self.comms_priority == 'safety' else (135,175,185))
+        self.buttons.append((x,y,line_w,24,self.start_comms_typing))
+        self.buttons.append((word_x-4,y,len(word)*11+8,24,self.cycle_comms_priority))
+        self.comms_page_footer = ([(label,action) for _,label,action in self.herbert_actions()]
+                                  +[(label,lambda text=text:self.quick_reply(text)) for label,text in COMMS_QUICK])   # draw_mouse_ui's bar
 
     def draw_comms_log(self, view):
         d = self.d
@@ -7878,6 +7911,8 @@ class Game:
             self.mouse_button(35,535,240,'Statement  T',ord('6'))
             self.mouse_button(290,535,240,'Reports  E',ord('e'))
             self.mouse_button(35,674,1000,'Return',ord('9'))
+        elif self.mode == 'comms' and self.comms_tab == 1:
+            for label,action in getattr(self,'comms_page_footer',[]): self.mouse_button(0,674,0,label,action=action)
         elif self.mode == 'reports':
             for i,label in enumerate(('Today','7 days','All time')):
                 self.mouse_button(35+i*255,674,240,('> ' if i == self.report_period else '')+label,action=lambda i=i: setattr(self,'report_period',i))

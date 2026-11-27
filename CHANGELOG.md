@@ -1,3 +1,9 @@
+# 0.18.1 — Ada Morrow and the comms page
+
+- **Chief Engineer Ada Morrow** now gives the word about the alpha test, with her own portrait, after Herbert's guided trip. Herbert sticks to flying and trading.
+- **Docked, 5 opens the full comms page**, as Ctrl+5 does. Its Log tab now does what the old side panel did: type and send (Enter), set the priority (P), quick replies, and Call Herbert. 5 again takes you back.
+- Server: no change needed.
+
 # 0.18.0 — Founder Members
 
 - **Founder Members.** Every pilot let in during the alpha is a Founder Member, and their Trade Dog Licence carries a red FOUNDER MEMBER stamp. It shows once your game has heard from the STA this session.

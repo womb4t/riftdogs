@@ -19,7 +19,7 @@ LOW_FUEL = 1.0        # units in the tank (of 7) he calls low even without a cou
 STAGES = ('waiting', 'offered', 'guiding', 'on_call', 'gone')
 EVENTS = ('bought', 'launched', 'course', 'jumped', 'clearance', 'docked', 'sold')
 STATE_KEYS = ('stage', 'step', 'trips', 'last_left', 'waved_off', 'plan', 'last_line', 'idle', 'nudged', 'since_intro')
-OPTIONAL_KEYS = ('alpha_said',)   # added once he has told the pilot about the alpha test; older saves lack it
+OPTIONAL_KEYS = ('alpha_said',)   # set once the pilot has been told about the alpha test (now by Ada Morrow); older saves lack it
 
 CALL_LINE = "Ah. Fresh meat. Herbert's the name: forty years hauling freight, thirty-eight of them legally. Want me to show you how it's done?"
 END_LINE = "That's the job. Now do it again without me. I'll be on the radio if you get stuck."
@@ -30,8 +30,6 @@ GOODBYE_LINE = "Clear skies, full holds. You're on your own now, rookie."
 LINES = {
     'call': (CALL_LINE,),
     'trip_done': (END_LINE,),
-    'alpha': ("One more thing, rookie. This whole outfit's still in alpha. Something breaks, Ctrl+0 and tell them about it. "
-              "They do read it, which is more than the STA ever did.",),
     # Said straight after the offer is answered, as its own line, so a new pilot knows where he lives.
     'call_hint': (
         "I'm on comms, 5, flying or docked. Ctrl+H if you want me sooner.",
@@ -214,7 +212,7 @@ for _face, _keys in (
         ('speaking', 'call_hint step_buy step_launch step_course step_jump step_clearance step_dock step_sell pick_up '
                      'nudge reoffer_later call_lost call_course clearance_now'),
         ('amused', 'done_buy done_launch done_course done_jump done_clearance done_dock launched_empty came_back '
-                   'nothing_to_sell even wave_off decline alpha'),
+                   'nothing_to_sell even wave_off decline'),
         ('serious', 'step_buy_broke left_unsold loss call_attack call_fuel call_fuel_docked'),
         ('thinking', 'step_buy_poor dock_elsewhere call_buy_plan call_buy call_cargo')):
     for _key in _keys.split(): FACE_OF[_key] = _face
@@ -284,6 +282,11 @@ DEFAULT_NAMES = {'good': 'something cheap', 'port': 'a port nearby', 'here': 'Th
 def new_state():
     return {'stage': 'waiting', 'step': 0, 'trips': 0, 'last_left': None, 'waved_off': False,
             'plan': None, 'last_line': None, 'idle': 0.0, 'nudged': False, 'since_intro': None}
+
+
+def alpha_due(state):
+    """Ada Morrow's alpha notice is owed: the guided trip is finished and the pilot has not been told yet."""
+    return state['step'] >= len(STEPS) and state['stage'] in ('on_call', 'gone') and not state.get('alpha_said')
 
 
 def retired_state():
@@ -405,12 +408,8 @@ class Tutor:
         self.state['step'] = step
 
     def _trip_end(self, ctx):
-        """His sign-off for a finished guided trip, and (once per pilot) the word about the alpha test."""
-        lines = [self._say('trip_done', ctx)]
-        if not self.state.get('alpha_said'):
-            self.state['alpha_said'] = True
-            lines.append(self._say('alpha', ctx))
-        return lines
+        """His sign-off for a finished guided trip. The word about the alpha test follows from Ada Morrow (alpha_due)."""
+        return [self._say('trip_done', ctx)]
 
     def _finish_guided_trip(self):
         state = self.state

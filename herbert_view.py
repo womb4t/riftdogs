@@ -6,6 +6,7 @@ from pathlib import Path
 
 import cockpit
 import examiner
+import morrow
 from herbert import FACES
 
 ASSETS = Path(__file__).resolve().parent/'assets'
@@ -18,7 +19,8 @@ STA_BLUE = (127, 167, 198)
 
 # Who is on screen: key -> (name, frame colour, faces, asset prefix).
 SPEAKERS = {'herbert': ('HERBERT', ORANGE, FACES, 'herbert'),
-            'varga': ('EXAMINER VARGA', STA_BLUE, examiner.FACES, 'varga')}
+            'varga': ('EXAMINER VARGA', STA_BLUE, examiner.FACES, 'varga'),
+            'ada': (morrow.NAME, GREEN, morrow.FACES, 'ada')}   # jade, as her jacket
 
 # The docked panel: under the goods table, above the Buy/Sell buttons (y >= 668).
 MARKET_LIST = (24, 90, 860, 372)          # the goods table: names, prices, the selected row
