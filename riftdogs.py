@@ -38,7 +38,7 @@ import stations
 import cockpit
 import secrets
 
-VERSION = '0.17.0'
+VERSION = '0.18.0'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
@@ -2328,6 +2328,11 @@ class Game:
     # --- The Trade Dog Licence from the STA (the server): asked for on a pass, or on reconnecting ---
     LICENCE_RETRY = 60.   # seconds before asking again when the server couldn't be reached
 
+    def licence_founder(self):
+        """A Founder Member (let in during the alpha), as the STA last said this session. Not saved: the licence record's
+        keys stay as older games expect, and the session's sync asks again."""
+        return getattr(self,'_licence_founder',False)
+
     def licence_online(self):
         """A pilot on a server (reachable or not). A true offline save never gets a licence."""
         return getattr(self,'remote_save',None) is not None
@@ -2568,6 +2573,14 @@ class Game:
         d.text(x0+80,fy,'SOVEREIGN TRADE ASSEMBLY',navy)
         d.text(x0+80,fy+20,'COMMERCE · FREIGHT · SALVAGE · CHARTER',STA_BLUE)
         d.fill(x0+6,y0+h-15,w-12,4,LICENCE_ORANGE); d.fill(x0+6,y0+h-10,w-12,2,LICENCE_RED)
+        if number is not None and self.licence_founder():
+            # The Founder stamp, top right in the header: a red double border like the STA's own stamps.
+            sw,sh = 100,48
+            fx,fy0 = x0+w-sw-12,y0+10
+            d.rect(fx,fy0,sw,sh,LICENCE_RED); d.rect(fx+3,fy0+3,sw-6,sh-6,LICENCE_RED)
+            for dx in (0,1):   # twice, a pixel apart: the stamp's heavier ink
+                d.text(fx+(sw-7*11)//2+dx,fy0+5,'FOUNDER',LICENCE_RED)
+                d.text(fx+(sw-6*11)//2+dx,fy0+24,'MEMBER',LICENCE_RED)
         if number is None:
             word = 'UNREGISTERED'
             sw,sh = len(word)*33,63
@@ -2615,6 +2628,7 @@ class Game:
         except (KeyError,TypeError,ValueError):
             self.message = "The STA's reply couldn't be read. Your pass is kept."
             return
+        self._licence_founder = reply.get('founder') is True   # this session only: never in the save's record
         fields = dict(number=number,issued=float(issued),stars=stars)
         if getattr(self,'licence_queued',None) != 'public': fields['public'] = dict(public)   # a newer choice is on its way
         self.hold_licence(**fields)

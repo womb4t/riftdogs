@@ -1,3 +1,8 @@
+# 0.18.0 — Founder Members
+
+- **Founder Members.** Every pilot let in during the alpha is a Founder Member, and their Trade Dog Licence carries a red FOUNDER MEMBER stamp. It shows once your game has heard from the STA this session.
+- Server: update the server first. Older games keep working, so the minimum game version stays where it is.
+
 # 0.17.0 — names and the STA registry
 
 - **Your pilot number is your identity.** New pilots choose a commander name once: on the join form, at sign-up, or on the name screen at first login.
