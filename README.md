@@ -2,7 +2,7 @@
 
 A living galaxy you trade in.
 
-An original space trading game in Python for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.19.0**.
+An original space trading game in Python for **Omarchy**. Trade, mine, fight robot pirates, smuggle contraband and navigate a small wireframe universe. Current version: **0.19.1**.
 
 Play offline, or play online in a shared living galaxy: other skippers' ships on your scanner, a shared market, the Relay's news ticker and payment codes. Online play uses the official Riftdogs server, which saves your progress. Offline play needs no account; every copy of the game checks in with its email and install ID (see [PRIVACY.md](PRIVACY.md)). Shared combat is a future project. The phased development plan is in [ROADMAP.md](ROADMAP.md).
 
@@ -118,13 +118,13 @@ Without valid clearance, even a geometrically correct entry will be rejected as 
 
 Buy and sell quotes are separate: BUY is what you pay, SELL is what you receive. Station stock is finite and saved. Cargo reduces top speed, turning rate, acceleration and braking, and increases fuel consumption. Extended Cargo Pods raise the hold from 32 to 40 tonnes.
 
-Outfitting availability depends on the local yard grade. You can buy an energy laser, high energy combat weapon, asteroid energy weapon, missiles, mines, an ECS, a shield generator, an autopilot, jammer or cloak. Front lasers can be switched with V. A rear laser mount costs 600 credits at yard grade 4 or above and comes with a burst laser. Press F for rear view, then Space to fire it; V in rear view moves any laser you own to the rear mount (each bought laser sits on one mount at a time; the burst laser fits both). No mount means no rear firing. Rear view does not change your ship’s course or flight controls. Ammunition must be replaced; the AGM rack holds six and the mine rack four. Browse down to see all equipment.
+Outfitting availability depends on the local mech level. You can buy an energy laser, high energy combat weapon, asteroid energy weapon, missiles, mines, an ECS, a shield generator, an autopilot, jammer or cloak. Front lasers can be switched with V. A rear laser mount costs 600 credits at mech level 4 or above and comes with a burst laser. Press F for rear view, then Space to fire it; V in rear view moves any laser you own to the rear mount (each bought laser sits on one mount at a time; the burst laser fits both). No mount means no rear firing. Rear view does not change your ship’s course or flight controls. Ammunition must be replaced; the AGM rack holds six and the mine rack four. Browse down to see all equipment.
 
 Use A to find an asteroid, select a purchased asteroid energy weapon with V, and fire until it breaks up. Approach the fragments at speed 50 or below. With an ECS fitted, O collects one tonne of ore within 260 metres; sell ore at a station. Ordinary lasers do not yield ore.
 
 ### Navigation and fuel
 
-Every planet has galactic coordinates and a searchable profile showing economy, government, yard grade, population and diameter. Search with / and press Enter to lock the first match. C accepts an arbitrary coordinate such as `4.5,6.2`, within 0–10 on both axes. The locked waypoint appears in navigation and is saved when docked.
+Every planet has galactic coordinates and a searchable profile showing economy, government, mech level, population and diameter. Search with / and press Enter to lock the first match. C accepts an arbitrary coordinate such as `4.5,6.2`, within 0–10 on both axes. The locked waypoint appears in navigation and is saved when docked.
 
 The map shows both travel choices for your current load:
 
@@ -304,11 +304,11 @@ demand. Lawless and Wartorn governments add an arms premium; Corporations add
 some narcotics demand. Normal dealer spreads and customs risks still apply.
 
 Detailed planet profiles: 1 opens the map; select a named planet and press I
-or click Planet profile. View coordinates, government, population, size, yard grade,
+or click Planet profile. View coordinates, government, population, size, mech level,
 customs, docking access, station services and all commodity buy/sell prices.
 Left/Right or Previous/Next browses profiles without changing your waypoint.
 I or the Back button returns to the map. The main header shows your current system
-name, economy and yard grade (such as Y5), with credits/kills below.
+name, economy and mech level (such as M5), with credits/kills below.
 
 FEEDBACK: press Ctrl+0 (or Menu 4, Report a bug), choose Bug report or Suggestion,
 then type a description and click Log report. Each report is saved as its own
@@ -395,8 +395,8 @@ all, plus Paste/Copy/Select all buttons. Notes and feedback accept these
 shortcuts too. Heat now has its own flight instrument with shield protection
 and the 90% danger marker; VMS fuel is shown separately.
 
-Proximity mines cost 75 credits and require yard grade 4; maximum four.
-Outfitting shows the local and required yard grades even for ammunition.
+Proximity mines cost 75 credits and require mech level 4; maximum four.
+Outfitting shows the local and required mech levels even for ammunition.
 
 ## Station hostility cooldown
 

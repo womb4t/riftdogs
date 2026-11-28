@@ -41,7 +41,7 @@ import ships
 import cockpit
 import secrets
 
-VERSION = '0.19.0'
+VERSION = '0.19.1'
 GAME_NAME = 'Riftdogs'   # the player-facing name; file, save and config names keep 'riftdogs' for now
 HOSTILITY_COOLDOWN_SECONDS = 30*60
 STATION_POLICE_CAPACITY = 6
@@ -870,7 +870,7 @@ class Pilot:
 
     def buy_equipment(self, index):
         key, label, cost, tech, _ = EQUIPMENT[index]
-        if TECH[self.system] < tech: return f'Outfitting unavailable: {label} requires yard grade {tech}; {SYSTEMS[self.system][0]} is yard grade {TECH[self.system]}.'
+        if TECH[self.system] < tech: return f'Outfitting unavailable: {label} requires mech level {tech}; {SYSTEMS[self.system][0]} is mech level {TECH[self.system]}.'
         if key in self.equipment: return 'Already installed.'
         if key == 'mine' and self.mines >= MAX_MINES: return f'Mine rack full ({MAX_MINES}).'
         if key == 'missile' and self.missiles >= MAX_MISSILES: return f'Missile rack full ({MAX_MISSILES}).'
@@ -1387,6 +1387,9 @@ class Game:
     def __init__(self, display):
         global VIEW
         VIEW = None   # until this session's market reports the Council's view
+        # Every hull's BSP tree, built in the background now rather than on a ship's first appearance in flight.
+        self.ships_ready = threading.Thread(target=ships.warm, name='ships', daemon=True)
+        self.ships_ready.start()
         self.alert = None
         self._save_elapsed = 0.
         self._restoring = False
@@ -5960,7 +5963,7 @@ class Game:
         d,dim,ship = self.d,(135,175,185),self.disabled_ship
         y = 145
         if 'dsc' not in self.p.equipment:
-            d.text(45,y,'No DSC comms console fitted. Outfitting sells one at yard grade 3+ stations.',GOLD)
+            d.text(45,y,'No DSC comms console fitted. Outfitting sells one at mech level 3+ stations.',GOLD)
         elif not ship or 'ident' not in ship:
             d.text(45,y,'No DSC distress alerts received. The console listens while you fly.',GREEN)
         else:
@@ -6890,7 +6893,7 @@ class Game:
                 f'Cruise fuel {litres(dist*.25*p.mass_factor)}',f'Cruise ETA {int(sec//60)}m {int(sec%60)}s',f'Aboard {tank_text(p.fuel)}']
         if w['system'] is not None:
             i = w['system']; govt,pop,size = PROFILES[i]
-            info += [SYSTEMS[i][1],f'Yard grade {TECH[i]}',govt,
+            info += [SYSTEMS[i][1],f'Mech level {TECH[i]}',govt,
                      'I / Profile: full details',
                      'Docking: allowed' if self.station_allows(i) else 'Docking: refused']
         else: info += ['Uninhabited coordinates','No station or services']
@@ -6924,7 +6927,7 @@ class Game:
         facts = [f'Coordinates: {position[0]:.2f}, {position[1]:.2f}',
                  'Economy: '+economy_name,'Government: '+government,
                  f'Population: {self.economy_report(i)["population"] if self.economy_report(i) else population:.1f} billion',f'Diameter: {size:,} km',
-                 f'Yard grade: {TECH[i]}',
+                 f'Mech level: {TECH[i]}',
                  f'Police reserve: {self.p.station_police_remaining[i]}/{STATION_POLICE_CAPACITY}',
                 ('Customs: minimal'+('; no trade tax' if VIEW else '')) if government in ('Lawless','Wartorn') else
                 (f'Customs: regulated; trade tax {VIEW["tax"][i]*100:.1f}%' if VIEW else 'Customs: regulated; contraband can be seized'),
@@ -7039,7 +7042,7 @@ class Game:
     def toggle_radar_range(self):
         """Ctrl+L / RANGE: the long-range scanner switches the radar between 2.5 and 25 km."""
         if 'lrscan' not in self.p.equipment:
-            self.message = 'Long-range scanner required (outfitting, yard grade 6).'
+            self.message = 'Long-range scanner required (outfitting, mech level 6).'
             return
         self.radar_range = SCANNER_RANGE if self.radar_range == LONG_RANGE else LONG_RANGE
         self.message = (f'Radar: long range, {LONG_RANGE//1000} km. Distress calls show at their true range.' if self.radar_range == LONG_RANGE
@@ -8543,7 +8546,7 @@ class Game:
                 ('Field engineering','8','Repair your ship or a disabled ship. Training improves odds. Failed repairs wait 30m, 60m, 120m…')]),
             ('Station',[
                 ('Market','UP/DOWN  B / S','Click goods or use arrows. Buy and sell prices differ; station stock is finite.'),
-                ('Outfitting','U','Buy modules and ammunition. Availability depends on local yard grade.'),
+                ('Outfitting','U','Buy modules and ammunition. Availability depends on local mech level.'),
                 ('Fuel and service','2 then F / R','Fuel is a separate purchase. Service repairs damage and resets maintenance wear.'),
                 ('Bank and cargo bays','3 then B','Deposit money, store cargo, rent 40t or buy 100t of station capacity.'),
                 ('Earn fuel money','3 then J','Free dockside shifts pay 15-40 credits. Workshop practice earns engineering experience.'),
@@ -8575,8 +8578,8 @@ class Game:
         d.text(cockpit.TITLE_X,24,'ALPHA',GOLD)
         self.draw_ticker()
         location = 'In transit' if self.mode == 'hyperspace' else 'Deep space' if p.deep_space or self.mode == 'cruise' else SYSTEMS[p.system][0]
-        economy = '' if p.deep_space or self.mode in ('cruise','hyperspace') else f' / {SYSTEMS[p.system][1]} Y{TECH[p.system]}'
-        # The top bar's right end: system, economy and yard grade (Y5), then credits, Crymto and kills (26 characters a line).
+        economy = '' if p.deep_space or self.mode in ('cruise','hyperspace') else f' / {SYSTEMS[p.system][1]} M{TECH[p.system]}'
+        # The top bar's right end: system, economy and mech level (M5), then credits, Crymto and kills (26 characters a line).
         left,top,width,_ = cockpit.CONTENT
         room = (left+width-cockpit.STATUS_X)//cockpit.CHAR_W
         d.text(cockpit.STATUS_X,2,(location+economy)[:room],GOLD)
@@ -8712,16 +8715,16 @@ class Game:
                 d.text(35,525,line,WANTED_COLOR if line.split(':')[0].isupper() else (135,175,185))
                 d.text(500,590,'STOCK:',(135,175,185)); d.text(575,590,'wanted',WANTED_COLOR); d.text(655,590,'surplus',SURPLUS_COLOR)
             else:
-                d.text(35,85,f'SHIP OUTFITTING / LOCAL YARD GRADE {TECH[p.system]} / U market')
+                d.text(35,85,f'SHIP OUTFITTING / LOCAL MECH LEVEL {TECH[p.system]} / U market')
                 start = max(0,min(self.shop_selected-4,len(EQUIPMENT)-8))
                 for i in range(start,min(start+8,len(EQUIPMENT))):
                     key,label,cost,tech,desc = EQUIPMENT[i]
-                    state = f'FITTED, SELLS {p.resale_value(i)}' if key in p.equipment else f'NEEDS YARD {tech}' if tech>TECH[p.system] else 'AVAILABLE'
+                    state = f'FITTED, SELLS {p.resale_value(i)}' if key in p.equipment else f'NEEDS MECH {tech}' if tech>TECH[p.system] else 'AVAILABLE'
                     if key in ('missile','mine'): state += f' / {p.missiles}/{MAX_MISSILES} ABOARD' if key == 'missile' else f' / {p.mines}/{MAX_MINES} ABOARD'
                     d.text(35,135+(i-start)*37,f'{">" if i==self.shop_selected else " "} {label:<34} {cost:>4} cr  {state}',GOLD if i==self.shop_selected else GREEN)
                 d.text(35,455,EQUIPMENT[self.shop_selected][4],GOLD)
                 item,label,cost,required,_ = EQUIPMENT[self.shop_selected]
-                d.text(35,490,f'Selected: {label} / needs yard grade {required} / local yard grade {TECH[p.system]}',GOLD if required <= TECH[p.system] else RED)
+                d.text(35,490,f'Selected: {label} / needs mech level {required} / local mech level {TECH[p.system]}',GOLD if required <= TECH[p.system] else RED)
                 d.text(35,520,'B or ENTER buys; S sells for half price.')
                 d.text(35,545,'The burst laser is built in and cannot be sold.',(135,175,185))
             wanted = self.wanted_level()
@@ -9489,7 +9492,7 @@ class Game:
             # Level of detail: a ship under LOD_SIZE px across leaves out its smallest faces. Its size there is at
             # least its nose-to-tail length over root 2, so only a ship shorter than that is measured.
             small = (self.project,self.LOD_SIZE,self.LOD_SHARE) if length < self.LOD_SIZE*1.5 else None
-            items = ships.paint(name,centre,facing,up,rear=self.rear_view,near=near,once=True,lod=small)
+            items = ships.paint(name,centre,facing,up,rear=self.rear_view,near=near,once=True,lod=small,items=False)
             sign,pts = (-1. if self.rear_view else 1.),items.points
             used = {i for op in items.order for i in (op[1] if op[0] == 'face' else op[1:3])}
             front = [sign*pts[i][2] for i in used if sign*pts[i][2] > near]
@@ -9526,7 +9529,7 @@ class Game:
             if got is None: got = cache[id(q)] = view(q)
             return got
         order = getattr(items,'order',None)
-        if order is not None and len(order) == len(items):
+        if order is not None and (len(order) == len(items) or not items):   # a ships.Painted, full or lean
             points,scale = items.points,cockpit.VIEW_SCALE
             depth = [-z for _,_,z in points] if rear else [z for _,_,z in points]
             if depth and min(depth) > edge:   # the whole ship in front: no cuts, every point on screen; view() inlined
@@ -9549,6 +9552,9 @@ class Game:
                     line(*got,(int(colour[0]*k+.5),int(colour[1]*k+.5),int(colour[2]*k+.5)))
                 return
             shown = [view(q) for q in points]
+            if not items:   # lean: the items from the order
+                items = [('face',[points[i] for i in op[1]]) if op[0] == 'face' else ('line',points[op[1]],points[op[2]])
+                         for op in order]
             steps = ((item,[shown[i] for i in op[1]] if op[0] == 'face' else (shown[op[1]],shown[op[2]]))
                      for op,item in zip(order,items))
         else:

@@ -1,3 +1,10 @@
+# 0.19.1 — solid ships
+
+- **Solid ships.** The new ships are properly solid now: you no longer see through a hull to the lines behind it, from any angle.
+- **Mech level.** A world's yard grade is now its Mech level (M5 in the top bar).
+- **Admin: removing people from the waiting list.** For anyone running a server: the dashboard's waiting list has a Remove button, one person at a time or all you tick.
+- Server: update the server for the Remove button. Older games keep working.
+
 # 0.19.0 — the Riftdogs fleet
 
 - **New ships.** Every ship in flight is now a 3D model of the Riftdogs fleet. You fly the RD-1 Kestrel; police fly the RD-3 Harrier; traders fly the RD-2 Longreach, RD-4 Wayfarer, TR-47 Mastiff and the claw freighter; pirates fly whatever they can get their hands on. Ships face the way they fly, other pilots' noses point the right way (even reversing), and your cockpit shows your Kestrel from above.

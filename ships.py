@@ -366,19 +366,283 @@ def _to_view(m, centre, ex, ey, ez):
             for x, y, z in m.verts]
 
 
+# ---- hidden surfaces: a BSP tree per hull ----------------------------------------------------------------------
+# The hulls are overlapping convex solids, which no sort by depth can draw correctly from every side. A binary
+# space partition, built once per hull, can: every face is filed against the planes of the others (split where it
+# crosses one), and walking the tree away from the camera's side of each plane gives an exact far-to-near order.
+
+_EPS = 1e-6
+
+
+class _Node:
+    __slots__ = ('n', 'd', 'same', 'opp', 'lines', 'front', 'back', 'front_rest', 'back_rest')
+
+    def __init__(self, n, d):
+        self.n, self.d = n, d
+        self.same, self.opp, self.lines = [], [], []   # pieces facing along n, against it; bare lines in the plane
+        self.front = self.back = None
+        self.front_rest = self.back_rest = ()   # bare lines in a half-space with no faces
+
+
+class _Verts:
+    """The hull's vertices (the model's first, index for index), plus the points where pieces were split."""
+    def __init__(self, verts):
+        self.list = list(verts)
+        self.index = {v: i for i, v in enumerate(self.list)}
+
+    def add(self, p):
+        key = _key(*p)
+        if key not in self.index:
+            self.index[key] = len(self.list)
+            self.list.append(key)
+        return self.index[key]
+
+
+def _split_face(piece, n, d, verts):
+    """A piece (idx, real, face) against the plane n.p = d: (front, back), either None. `real[k]` is the model edge
+    (its ends' indices, low first) that the piece's edge from idx[k] to the next lies on, or None along a cut made by
+    a split (not drawn)."""
+    idx, real, face = piece
+    pts = verts.list
+    side = [_dot(n, pts[i]) - d for i in idx]
+    if all(s >= -_EPS for s in side): return piece, None
+    if all(s <= _EPS for s in side): return None, piece
+    count = len(idx)
+    front, back = ([], []), ([], [])   # corner indices, and whether the edge leaving each is real
+    for k in range(count):
+        a, b, sa, sb, r = idx[k], idx[(k+1) % count], side[k], side[(k+1) % count], real[k]
+        if sa > _EPS:
+            front[0].append(a); front[1].append(r)
+        elif sa < -_EPS:
+            back[0].append(a); back[1].append(r)
+        else:   # on the plane: in both; its edge onwards is real on the side b lies (or both, b on the plane too)
+            front[0].append(a); front[1].append(r if sb >= -_EPS else None)
+            back[0].append(a); back[1].append(r if sb <= _EPS else None)
+        if (sa > _EPS and sb < -_EPS) or (sa < -_EPS and sb > _EPS):
+            t = sa / (sa - sb)
+            c = verts.add(tuple(pts[a][i] + t*(pts[b][i] - pts[a][i]) for i in range(3)))
+            front[0].append(c); front[1].append(r if sb > 0 else None)   # c on to b is the rest of a real edge;
+            back[0].append(c); back[1].append(r if sb < 0 else None)     # on the other side it runs along the cut
+    out = []
+    for ids, flags in (front, back):
+        keep = [k for k in range(len(ids)) if ids[k] != ids[(k+1) % len(ids)]]   # drop repeated corners
+        ids, flags = [ids[k] for k in keep], [flags[k] for k in keep]
+        out.append((tuple(ids), tuple(flags), face) if len(set(ids)) >= 3 else None)
+    return out[0], out[1]
+
+
+def _split_line(line, n, d, verts):
+    """A bare line (a, b, which) against the plane n.p = d: (front, back), either None; `which` names the model line."""
+    a, b, which = line
+    pts = verts.list
+    sa, sb = _dot(n, pts[a]) - d, _dot(n, pts[b]) - d
+    if sa >= -_EPS and sb >= -_EPS: return line, None
+    if sa <= _EPS and sb <= _EPS: return None, line
+    t = sa / (sa - sb)
+    c = verts.add(tuple(pts[a][i] + t*(pts[b][i] - pts[a][i]) for i in range(3)))
+    return ((a, c, which), (c, b, which)) if sa > 0 else ((c, b, which), (a, c, which))
+
+
+def _build(pieces, lines, planes, verts):
+    """The tree over these face pieces and bare lines; `planes[face]` is (n, d) of each model face."""
+    if not pieces:
+        return None, lines
+    best, chosen = None, None
+    seen = set()
+    for piece in pieces:
+        n, d = planes[piece[2]]
+        key = (_key(*n), round(d, 6))
+        if key in seen: continue
+        seen.add(key)
+        front = back = cut = 0
+        for other in pieces:
+            side = [_dot(n, verts.list[i]) - d for i in other[0]]
+            f, b = any(s > _EPS for s in side), any(s < -_EPS for s in side)
+            cut += f and b; front += f and not b; back += b and not f
+        score = 8*cut + abs(front - back)
+        if best is None or score < best:
+            best, chosen = score, (n, d)
+    n, d = chosen
+    node = _Node(n, d)
+    fronts, backs, front_lines, back_lines = [], [], [], []
+    for piece in pieces:
+        pn, pd = planes[piece[2]]
+        if all(abs(_dot(n, verts.list[i]) - d) <= _EPS for i in piece[0]):
+            (node.same if _dot(pn, n) > 0 else node.opp).append(piece)
+            continue
+        f, b = _split_face(piece, n, d, verts)
+        if f: fronts.append(f)
+        if b: backs.append(b)
+    for line in lines:
+        if all(abs(_dot(n, verts.list[i]) - d) <= _EPS for i in line[:2]):
+            node.lines.append(line)
+            continue
+        f, b = _split_line(line, n, d, verts)
+        if f: front_lines.append(f)
+        if b: back_lines.append(b)
+    node.front, rest_f = _build(fronts, front_lines, planes, verts)
+    node.back, rest_b = _build(backs, back_lines, planes, verts)
+    # lines left over in an empty half-space (no faces there) stay with this node, drawn on its side
+    node.front_rest, node.back_rest = rest_f, rest_b
+    return node, []
+
+
+class _Tree:
+    """A hull's BSP tree flattened: `verts`, the hull's vertices and the split points; the planes of its nodes in
+    preorder (`nx`, `ny`, `nz`, `d`); `loose`, bare lines outside every node; and `orders`, a cache of drawing
+    orders keyed by which side of each plane the camera is on (the order changes only when it crosses one)."""
+    __slots__ = ('verts', 'planes', 'root', 'nodes', 'nx', 'ny', 'nz', 'd', 'loose', 'orders')
+
+    def order(self, cam, dropped=frozenset()):
+        """For a camera at `cam` in the hull's frame: (steps, tidy), every step as (op, face) (face None for a
+        bare line), and the ops alone, tidied (see _tidy), leaving out the faces in `dropped` and their edges."""
+        x, y, z = cam
+        sides = tuple([(a*x + b*y + c*z > e) - (a*x + b*y + c*z < e)
+                       for a, b, c, e in zip(self.nx, self.ny, self.nz, self.d)])
+        got = self.orders.get((sides, dropped))
+        if got is not None: return got
+        steps = [(op, None) for op in self.loose]
+        add, extend = steps.append, steps.extend
+        def walk(k):
+            node = self.nodes[k]
+            side = sides[k]
+            if side > 0:
+                if node.back is not None: walk(node.back)
+                extend(node.back_rest); extend(node.lines); extend(node.same); extend(node.front_rest)
+                if node.front is not None: walk(node.front)
+            else:
+                if node.front is not None: walk(node.front)
+                extend(node.front_rest); extend(node.lines)
+                if side < 0: extend(node.opp)
+                extend(node.back_rest)
+                if node.back is not None: walk(node.back)
+        if self.nodes: walk(0)
+        kept = _tidy([(op, face) for op, face in steps if face not in dropped] if dropped else steps,
+                     self.planes, self.verts)
+        if len(self.orders) >= 64: self.orders.clear()
+        got = self.orders[(sides, dropped)] = (steps, kept)
+        return got
+
+
+def _tidy(steps, planes, verts):
+    """The ops of `steps` ((op, face) in drawing order) with no line drawn for nothing. A line piece that later
+    lines wholly cover is left out: it is drawn there, after the nearer face, where it stays on screen. And pieces
+    of one straight line that meet or overlap become one line, drawn where the later piece is, if every fill drawn
+    between them has the earlier piece on its front side (`planes[face]`, (n, d)): a face can only hide what lies
+    behind it, and lines hide nothing. A line op is ('line', i, j, which, ti, tj): see _line_op."""
+    covered, kept = {}, []
+    for op, face in reversed(steps):
+        if op[0] == 'line':
+            lo, hi = (op[4], op[5]) if op[4] <= op[5] else (op[5], op[4])
+            spans = covered.setdefault(op[3], [])
+            reach = lo   # how far the spans already cover from lo, joined end to end
+            for a, b in sorted(spans):
+                if a <= reach + 1e-6: reach = max(reach, b)
+            if reach >= hi - 1e-6: continue
+            spans.append((lo, hi))
+        kept.append((op, face))
+    out, open_ = [], {}   # open_: straight line -> indices in out of pieces still free to move later
+    for op, face in reversed(kept):
+        if op[0] != 'line':
+            (nx, ny, nz), d = planes[face]
+            for which, pieces in list(open_.items()):
+                free = []
+                for k in pieces:
+                    i, j = out[k][1], out[k][2]
+                    a, b = verts[i], verts[j]
+                    if nx*a[0] + ny*a[1] + nz*a[2] - d >= -1e-6 and nx*b[0] + ny*b[1] + nz*b[2] - d >= -1e-6:
+                        free.append(k)
+                if free: open_[which] = free
+                else: del open_[which]
+            out.append(op)
+            continue
+        same = open_.setdefault(op[3], [])
+        lo, hi = min(op[4], op[5]), max(op[4], op[5])
+        ends = [(op[4], op[1]), (op[5], op[2])]
+        for k in list(same):   # join every free piece it meets or overlaps, end to end
+            prev = out[k]
+            if min(prev[4], prev[5]) <= hi + 1e-6 and lo <= max(prev[4], prev[5]) + 1e-6:
+                ends += [(prev[4], prev[1]), (prev[5], prev[2])]
+                lo, hi = min(lo, prev[4], prev[5]), max(hi, prev[4], prev[5])
+                out[k] = None
+                same.remove(k)
+        ends.sort()
+        (ti, i), (tj, j) = ends[0], ends[-1]
+        same.append(len(out))
+        out.append(op if len(ends) == 2 else ('line', i, j, op[3], ti, tj))
+    return [op for op in out if op is not None]
+
+
+def _line_op(i, j, verts, ends):
+    """('line', i, j, which, ti, tj) for a line from vertex i to j along the model edge or line between `ends`:
+    `which` names the infinite straight line it lies on (so collinear edges share it), ti and tj are i's and j's
+    places along it, in metres."""
+    a, b = (verts[k] for k in ends)
+    u = [b[k] - a[k] for k in range(3)]
+    size = math.sqrt(_dot(u, u))
+    u = [c/size for c in u]
+    first = next(c for c in u if abs(c) > 1e-9)
+    if first < 0: u = [-c for c in u]
+    along = _dot(a, u)
+    foot = [a[k] - along*u[k] for k in range(3)]   # the line's point nearest the model's origin
+    which = tuple(round(c, 6) + 0.0 for c in u) + tuple(round(c, 4) + 0.0 for c in foot)
+    return ('line', i, j, which, _dot(verts[i], u), _dot(verts[j], u))
+
+
+def _ops(piece, verts):
+    """A piece's drawing steps as (op, face): its fill, and its real edges."""
+    idx, real, face = piece
+    edges = []
+    for k in range(len(idx)):
+        if real[k] is not None:
+            edges.append((_line_op(idx[k], idx[(k+1) % len(idx)], verts, real[k]), face))
+    return (('face', idx), face), edges
+
+
 @functools.lru_cache(maxsize=None)
-def _face_groups(name):
-    """paint's working, per face: (idx, nx, ny, nz, (('face', idx), ('line', i, j, edge) round it...)), an edge
-    being its ends' indices in order. Cached."""
-    def line(i, j):
-        return ('line', i, j, (min(i, j), max(i, j)))
-    return tuple((idx, nx, ny, nz, (('face', idx),) + tuple(line(idx[k], idx[(k+1) % len(idx)]) for k in range(len(idx))))
-                 for idx, (nx, ny, nz) in model(name).faces)
+def _tree(name):
+    """The hull's BSP tree, built once. Cached."""
+    m = model(name)
+    verts = _Verts(m.verts)
+    planes = [(n, _dot(n, m.verts[idx[0]])) for idx, n in m.faces]
+    pieces = [(idx, tuple((min(idx[k], idx[(k+1) % len(idx)]), max(idx[k], idx[(k+1) % len(idx)]))
+                          for k in range(len(idx))), f) for f, (idx, _) in enumerate(m.faces)]
+    root, rest = _build(pieces, [(a, b, ('line', k)) for k, (a, b) in enumerate(m.lines)], planes, verts)
+    V = verts.list
+    bare = lambda lines: tuple((_line_op(a, b, V, m.lines[which[1]]), None) for a, b, which in lines)
+    def steps(group):   # the pieces of one plane: every fill, then every edge (fills there never overlap edges)
+        ops = [_ops(p, V) for p in group]
+        return tuple(fill for fill, _ in ops) + tuple(edge for _, edges in ops for edge in edges)
+    nodes = []
+    def number(node):   # preorder; children become indices
+        if node is None: return None
+        k = len(nodes)
+        nodes.append(node)
+        node.same, node.opp = steps(node.same), steps(node.opp)
+        node.lines, node.front_rest, node.back_rest = bare(node.lines), bare(node.front_rest), bare(node.back_rest)
+        node.front, node.back = number(node.front), number(node.back)
+        return k
+    number(root)
+    tree = _Tree()
+    tree.verts, tree.planes, tree.root, tree.nodes = tuple(verts.list), planes, root, nodes
+    tree.nx, tree.ny, tree.nz = (tuple(node.n[i] for node in nodes) for i in range(3))
+    tree.d = tuple(node.d for node in nodes)
+    tree.loose = tuple(op for op, _ in bare(rest))
+    tree.orders = {}
+    return tree
+
+
+def warm():
+    """Build every hull's BSP tree now (each takes a moment), so none is built mid-flight."""
+    for name in NAMES:
+        _tree(name)
 
 
 class Painted(list):
-    """paint's items, with how they were made: `points`, the model's vertices camera-relative, index for index (the
-    items share these objects), and `order`, the same items by vertex index: ('face', idx) or ('line', i, j, edge), edge None for a bare line."""
+    """paint's items, with how they were made: `points`, the hull's vertices camera-relative, index for index (the
+    items share these objects), and `order`, the same items by vertex index: ('face', idx) or
+    ('line', i, j, which, ti, tj), as _tidy describes. An empty Painted with an order is paint's lean form: the
+    order and points alone."""
     __slots__ = ('points', 'order')
 
 
@@ -387,61 +651,51 @@ def _area(points):
     return abs(sum(a[0]*b[1] - b[0]*a[1] for a, b in zip(points, points[1:] + points[:1]))) / 2
 
 
-def paint(name, centre, facing, up, rear=False, near=6.0, once=False, lod=None):
+def paint(name, centre, facing, up, rear=False, near=6.0, once=False, lod=None, items=True):
     """The ship as an opaque solid in painter's order (far first): ('face', points) to fill with the background and
-    ('line', a, b), camera-relative and unclipped. Only faces turned towards the camera are kept, each followed by
-    its own edges; a bare line goes by itself. Each group is placed by the mean of its points' depths (z, or -z when
-    `rear`), clamped at `near`; a face's group goes before a loose line at the same depth, ties keep model order.
-    With `once`, an edge two kept faces share comes only after the later (nearer) one, where it is left on screen.
-    `lod` (project, size, share): if every vertex projects (project: point -> (sx, sy, ...) or None) and the ship is
-    under `size` px across on screen (its bounding box's larger side), faces under `share` of that size squared (in
-    px² there) are left out, with the edges only they have.
-    Returns a Painted list."""
+    ('line', a, b), camera-relative and unclipped. The order comes from the hull's BSP tree, so it is exact: nothing
+    drawn later is hidden by a face drawn before it. Only faces turned towards the camera are kept (split where the
+    tree cut them), each followed by its own real edges; bare lines go in their place in the tree. Anything wholly
+    at or behind `near` (depth z, or -z when `rear`) is left out.
+    With `once`, no line is drawn for nothing (see _tidy): an edge two kept pieces share comes only after the later
+    (nearer) one, where it is left on screen, and pieces of a line that meet with no fill between are drawn as one.
+    `lod` (project, size, share): if every model vertex projects (project: point -> (sx, sy, ...) or None) and the
+    ship is under `size` px across on screen (its bounding box's larger side), faces under `share` of that size
+    squared (in px² there) are left out, with the edges only they have.
+    Returns a Painted list; with `items` False, an empty one carrying only its `order` and `points` (all
+    draw_solid needs), which is quicker to make."""
     m = model(name)
+    tree = _tree(name)
     ex, ey, ez = basis(facing, up)
-    pts = _to_view(m, centre, ex, ey, ez)
-    sign = -1.0 if rear else 1.0
-    depth = [sign*p[2] for p in pts]
+    cx, cy, cz = centre
     (ex0, ex1, ex2), (ey0, ey1, ey2), (ez0, ez1, ez2) = ex, ey, ez
-    shown, least = None, 0.0
+    pts = [[cx + x*ex0 + y*ey0 + z*ez0, cy + x*ex1 + y*ey1 + z*ez1, cz + x*ex2 + y*ey2 + z*ez2]
+           for x, y, z in tree.verts]
+    depth = [-p[2] for p in pts] if rear else [p[2] for p in pts]
+    dropped = frozenset()
     if lod is not None:
         project, size, share = lod
-        shown = [project(p) for p in pts]
-        across = None if None in shown else max(max(p[k] for p in shown) - min(p[k] for p in shown) for k in (0, 1))
-        if across is None or across >= size:
-            shown = None
-        else:
-            least = share*across*across
-    groups = []
-    for idx, nx, ny, nz, group in _face_groups(name):
-        p0 = pts[idx[0]]
-        if ((nx*ex0 + ny*ey0 + nz*ez0)*p0[0] + (nx*ex1 + ny*ey1 + nz*ez1)*p0[1]
-                + (nx*ex2 + ny*ey2 + nz*ez2)*p0[2]) >= 0:
-            continue
-        depths = [depth[i] for i in idx]
-        if max(depths) <= near:
-            continue
-        if shown is not None and _area([shown[i] for i in idx]) < least:
-            continue
-        groups.append((-sum([d if d > near else near for d in depths]) / len(depths), -1, len(groups), group))
-    for i, j in m.lines:
-        da, db = depth[i], depth[j]
-        if max(da, db) <= near:
-            continue
-        groups.append((-(max(da, near) + max(db, near)) / 2, 0, len(groups), (('line', i, j, None),)))
-    groups.sort(key=lambda g: g[:3])
-    order = [op for g in groups for op in g[3]]
-    if once:   # last first: an edge already seen is drawn again later, so this one is left out
-        seen, kept = set(), []
-        for op in reversed(order):
-            if op[0] == 'line' and op[3] is not None:
-                if op[3] in seen:
-                    continue
-                seen.add(op[3])
-            kept.append(op)
-        order = kept[::-1]
+        shown = [project(p) for p in pts[:len(m.verts)]]
+        if None not in shown:
+            across = max(max(p[k] for p in shown) - min(p[k] for p in shown) for k in (0, 1))
+            if across < size:
+                least = share*across*across
+                dropped = frozenset(f for f, (idx, _) in enumerate(m.faces) if _area([shown[i] for i in idx]) < least)
+    # the camera (the origin) in the hull's own frame
+    cam = (-(cx*ex0 + cy*ex1 + cz*ex2), -(cx*ey0 + cy*ey1 + cz*ey2), -(cx*ez0 + cy*ez1 + cz*ez2))
+    steps, kept = tree.order(cam, dropped)
+    if once and min(depth) > near:
+        order = kept   # the usual case, cached whole
+    else:
+        kept = []
+        for op, face in steps:
+            if op[0] == 'face':
+                if face in dropped or max([depth[i] for i in op[1]]) <= near: continue
+            elif face in dropped or (depth[op[1]] <= near and depth[op[2]] <= near): continue
+            kept.append((op, face))
+        order = _tidy(kept, tree.planes, tree.verts) if once else [op for op, _ in kept]
     out = Painted(('face', [pts[i] for i in op[1]]) if op[0] == 'face' else ('line', pts[op[1]], pts[op[2]])
-                  for op in order)
+                  for op in order) if items else Painted()
     out.points, out.order = pts, order
     return out
 

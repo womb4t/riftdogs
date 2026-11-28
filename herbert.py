@@ -250,7 +250,7 @@ LESSONS = {
     'scooping': ("The ECS is 480 cr at outfitting (U on the VMS screen): ore, canisters, even the sun.",
                  "Under 50, ore within 260 m: the ECS draws it in. Asteroid Energy Weapon, 700 cr: optional.",
                  "Ore in the hold. An honest living, rocks, if not a quick one."),
-    'dsc': ("A DSC comms console is 450 cr at outfitting, yard grade 3 and up. Somebody's always worse off.",
+    'dsc': ("A DSC comms console is 450 cr at outfitting, mech level 3 and up. Somebody's always worse off.",
             "Fitted, alerts show on the Distress tab: Ctrl+5 for the comms page. Acknowledge one to track it.",
             "There, you heard one. Whether you go is your own business."),
     'rescue': ("A disabled ship shows as a gold contact. Close within 1,500 m and press N to hail it.",
